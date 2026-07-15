@@ -641,10 +641,10 @@ def capturar_screenshot(page, nome: str):
 #  PORTAL JAMEF — Login via AWS Cognito + Upload XMLs
 # ════════════════════════════════════════════════════════════
 
-def gmail_ler_codigo_mfa(remetente_filtro: str = "noreply@jamef.com.br", timeout_seg: int = 60) -> str | None:
+def gmail_ler_codigo_mfa(remetente_filtro: str = "jamef", timeout_seg: int = 90) -> str | None:
     """
     Lê o código MFA enviado pela JAMEF no Gmail.
-    Aguarda até timeout_seg segundos pelo email chegar.
+    Busca pelo assunto: 'Portal Cliente Jamef - Código de Verificação MFA'
     """
     import json
     import base64
@@ -674,10 +674,10 @@ def gmail_ler_codigo_mfa(remetente_filtro: str = "noreply@jamef.com.br", timeout
 
         inicio = time.time()
         while time.time() - inicio < timeout_seg:
-            # Busca emails recentes da JAMEF
+            # Busca por remetente E assunto do email da JAMEF
             resultado = service.users().messages().list(
                 userId="me",
-                q=f"from:{remetente_filtro} newer_than:2m",
+                q='from:naoresponda@jamef.com.br subject:"Portal Cliente Jamef" newer_than:5m',
                 maxResults=5
             ).execute()
 
@@ -689,9 +689,7 @@ def gmail_ler_codigo_mfa(remetente_filtro: str = "noreply@jamef.com.br", timeout
                     format="full"
                 ).execute()
 
-                # Extrai o corpo do email
-                payload = msg_data.get("payload", {})
-                corpo = _extrair_corpo_email(payload)
+                corpo = _extrair_corpo_email(msg_data.get("payload", {}))
 
                 # Procura por código de 6 dígitos
                 codigos = re.findall(r'\b(\d{6})\b', corpo)
