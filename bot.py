@@ -641,16 +641,106 @@ def capturar_screenshot(page, nome: str):
 #  PORTAL JAMEF — Login via AWS Cognito + Upload XMLs
 # ════════════════════════════════════════════════════════════
 
+def gmail_ler_codigo_mfa(remetente_filtro: str = "noreply@jamef.com.br", timeout_seg: int = 60) -> str | None:
+    """
+    Lê o código MFA enviado pela JAMEF no Gmail.
+    Aguarda até timeout_seg segundos pelo email chegar.
+    """
+    import json
+    import base64
+    import time
+    import re
+    from google.oauth2.credentials import Credentials
+    from googleapiclient.discovery import build
+
+    print(f"\n📬  Aguardando código MFA no Gmail (até {timeout_seg}s)...")
+
+    oauth_raw = os.getenv("GMAIL_OAUTH_TOKEN", "")
+    if not oauth_raw:
+        print("   ⚠️  GMAIL_OAUTH_TOKEN não configurado.")
+        return None
+
+    try:
+        oauth_data = json.loads(base64.b64decode(oauth_raw).decode("utf-8"))
+        creds = Credentials(
+            token=None,
+            refresh_token=oauth_data["refresh_token"],
+            token_uri=oauth_data["token_uri"],
+            client_id=oauth_data["client_id"],
+            client_secret=oauth_data["client_secret"],
+            scopes=["https://www.googleapis.com/auth/gmail.readonly"]
+        )
+        service = build("gmail", "v1", credentials=creds)
+
+        inicio = time.time()
+        while time.time() - inicio < timeout_seg:
+            # Busca emails recentes da JAMEF
+            resultado = service.users().messages().list(
+                userId="me",
+                q=f"from:{remetente_filtro} newer_than:2m",
+                maxResults=5
+            ).execute()
+
+            mensagens = resultado.get("messages", [])
+            for msg in mensagens:
+                msg_data = service.users().messages().get(
+                    userId="me",
+                    id=msg["id"],
+                    format="full"
+                ).execute()
+
+                # Extrai o corpo do email
+                payload = msg_data.get("payload", {})
+                corpo = _extrair_corpo_email(payload)
+
+                # Procura por código de 6 dígitos
+                codigos = re.findall(r'\b(\d{6})\b', corpo)
+                if codigos:
+                    codigo = codigos[0]
+                    print(f"   ✅  Código MFA encontrado: {codigo}")
+                    return codigo
+
+            print(f"   ⏳  Aguardando email... ({int(time.time()-inicio)}s)")
+            time.sleep(5)
+
+        print("   ❌  Timeout — código MFA não encontrado no Gmail.")
+        return None
+
+    except Exception as e:
+        print(f"   ❌  Erro ao ler Gmail: {e}")
+        return None
+
+
+def _extrair_corpo_email(payload: dict) -> str:
+    """Extrai o texto do corpo do email recursivamente."""
+    import base64
+    corpo = ""
+    if "parts" in payload:
+        for part in payload["parts"]:
+            corpo += _extrair_corpo_email(part)
+    elif payload.get("mimeType") in ("text/plain", "text/html"):
+        data = payload.get("body", {}).get("data", "")
+        if data:
+            try:
+                corpo = base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="ignore")
+            except Exception:
+                pass
+    return corpo
+
+
 def jamef_login(email: str, senha: str) -> str | None:
     """
-    Faz login no portal JAMEF via AWS Cognito.
-    Retorna o idToken para uso nas chamadas da API.
+    Faz login no portal JAMEF via AWS Cognito com MFA.
+    1. Inicia autenticação com email/senha
+    2. Aguarda código MFA no Gmail
+    3. Confirma o código e retorna o idToken
     """
     import urllib.request
     import json
 
     print("\n🔐  Fazendo login no portal JAMEF...")
 
+    # Passo 1: Inicia autenticação
     payload = json.dumps({
         "AuthFlow": "USER_PASSWORD_AUTH",
         "ClientId": JAMEF_CLIENT_ID,
@@ -673,9 +763,55 @@ def jamef_login(email: str, senha: str) -> str | None:
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-            id_token = data["AuthenticationResult"]["IdToken"]
-            print("   ✅  Login JAMEF OK!")
-            return id_token
+
+            # Login direto (sem MFA)
+            if "AuthenticationResult" in data:
+                print("   ✅  Login JAMEF OK (sem MFA)!")
+                return data["AuthenticationResult"]["IdToken"]
+
+            # MFA necessário
+            if data.get("ChallengeName") in ("SOFTWARE_TOKEN_MFA", "EMAIL_OTP", "CUSTOM_CHALLENGE"):
+                session    = data.get("Session")
+                challenge  = data.get("ChallengeName")
+                print(f"   🔐  MFA necessário: {challenge}")
+
+                # Lê o código do Gmail
+                codigo = gmail_ler_codigo_mfa()
+                if not codigo:
+                    print("   ❌  Não foi possível obter o código MFA.")
+                    return None
+
+                # Passo 2: Confirma o código MFA
+                payload2 = json.dumps({
+                    "ChallengeName": challenge,
+                    "ClientId": JAMEF_CLIENT_ID,
+                    "Session": session,
+                    "ChallengeResponses": {
+                        "USERNAME": email,
+                        "SOFTWARE_TOKEN_MFA_CODE": codigo,
+                        "ANSWER": codigo
+                    }
+                }).encode("utf-8")
+
+                req2 = urllib.request.Request(
+                    JAMEF_COGNITO_URL,
+                    data=payload2,
+                    headers={
+                        "Content-Type": "application/x-amz-json-1.1",
+                        "X-Amz-Target": "AWSCognitoIdentityProviderService.RespondToAuthChallenge"
+                    },
+                    method="POST"
+                )
+
+                with urllib.request.urlopen(req2, timeout=15) as resp2:
+                    data2 = json.loads(resp2.read().decode("utf-8"))
+                    if "AuthenticationResult" in data2:
+                        print("   ✅  Login JAMEF com MFA OK!")
+                        return data2["AuthenticationResult"]["IdToken"]
+                    else:
+                        print(f"   ❌  Falha no MFA: {data2}")
+                        return None
+
     except Exception as e:
         print(f"   ❌  Erro no login JAMEF: {e}")
         return None
