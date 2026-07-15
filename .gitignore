@@ -1,0 +1,8 @@
+.env
+xmls_baixados/
+logs/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.vscode/
