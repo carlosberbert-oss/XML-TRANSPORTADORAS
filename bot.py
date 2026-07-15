@@ -673,12 +673,15 @@ def gmail_ler_codigo_mfa(remetente_filtro: str = "jamef", timeout_seg: int = 90)
         service = build("gmail", "v1", credentials=creds)
 
         inicio = time.time()
+        # Marca o momento exato do login para ignorar emails anteriores
+        timestamp_inicio = int(inicio)
+
         while time.time() - inicio < timeout_seg:
-            # Busca por remetente E assunto do email da JAMEF
+            # Busca apenas emails chegados APÓS o início desta execução
             resultado = service.users().messages().list(
                 userId="me",
-                q='from:naoresponda@jamef.com.br subject:"Portal Cliente Jamef" newer_than:5m',
-                maxResults=5
+                q=f'from:naoresponda@jamef.com.br subject:"Portal Cliente Jamef" after:{timestamp_inicio}',
+                maxResults=3
             ).execute()
 
             mensagens = resultado.get("messages", [])
