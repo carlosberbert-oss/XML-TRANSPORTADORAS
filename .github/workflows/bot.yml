@@ -77,6 +77,7 @@ jobs:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           GMAIL_USUARIO: ${{ secrets.GMAIL_USUARIO }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          GMAIL_OAUTH_TOKEN: ${{ secrets.GMAIL_OAUTH_TOKEN }}
           JAMEF_EMAIL: ${{ secrets.JAMEF_EMAIL }}
           JAMEF_SENHA: ${{ secrets.JAMEF_SENHA }}
           CI: "true"
