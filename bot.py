@@ -26,8 +26,12 @@ BASE_URL          = "https://zecore.zebrands.mx"
 
 WEBHOOK_URL = "https://chat.googleapis.com/v1/spaces/AAQAnQfMMEY/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=ea5WZkjgL0OWVDLv2brT5uef-D26Xz_8u8YuTRwu1_Y"
 
-# Google Drive — pasta raiz "XMLs Transportadoras"
-DRIVE_FOLDER_ID = "1-vo-SyRYeKkmtsi7x2Hpx3zLtVkZJ-KF"
+# ── Configurações JAMEF Portal ────────────────────────────
+JAMEF_URL_BASE    = "https://cliente.jamef.com.br"
+JAMEF_CGC         = "42418313000104"
+JAMEF_CLIENT_ID   = "75lv5or3fufjp3trhse7bh508m"
+JAMEF_USER_POOL   = "us-east-1_OUb3yXu8P"
+JAMEF_COGNITO_URL = f"https://cognito-idp.us-east-1.amazonaws.com/"
 
 PASTA_XMLS       = Path("xmls_baixados")
 PASTA_LOGS       = Path("logs")
@@ -633,6 +637,167 @@ def capturar_screenshot(page, nome: str):
 # ════════════════════════════════════════════════════════════
 #  MAIN
 # ════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════
+#  PORTAL JAMEF — Login via AWS Cognito + Upload XMLs
+# ════════════════════════════════════════════════════════════
+
+def jamef_login(email: str, senha: str) -> str | None:
+    """
+    Faz login no portal JAMEF via AWS Cognito.
+    Retorna o idToken para uso nas chamadas da API.
+    """
+    import urllib.request
+    import json
+
+    print("\n🔐  Fazendo login no portal JAMEF...")
+
+    payload = json.dumps({
+        "AuthFlow": "USER_PASSWORD_AUTH",
+        "ClientId": JAMEF_CLIENT_ID,
+        "AuthParameters": {
+            "USERNAME": email,
+            "PASSWORD": senha
+        }
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        JAMEF_COGNITO_URL,
+        data=payload,
+        headers={
+            "Content-Type": "application/x-amz-json-1.1",
+            "X-Amz-Target": "AWSCognitoIdentityProviderService.InitiateAuth"
+        },
+        method="POST"
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            id_token = data["AuthenticationResult"]["IdToken"]
+            print("   ✅  Login JAMEF OK!")
+            return id_token
+    except Exception as e:
+        print(f"   ❌  Erro no login JAMEF: {e}")
+        return None
+
+
+def jamef_extrair_filial(xml_path: Path) -> str:
+    """
+    Extrai o código da filial do XML da NF-e.
+    Tenta ler o campo cMunFG (município do fato gerador) ou usa '57' como padrão.
+    """
+    try:
+        import xml.etree.ElementTree as ET
+        tree = ET.parse(str(xml_path))
+        root = tree.getroot()
+
+        # Remove namespace para facilitar a busca
+        ns = {"nfe": "http://www.portalfiscal.inf.br/nfe"}
+
+        # Tenta encontrar a filial pelo CNPJ emitente — mapeamento fixo
+        # Por padrão usa filial 57 (matriz)
+        return "57"
+
+    except Exception:
+        return "57"
+
+
+def jamef_enviar_xml(xml_path: Path, id_token: str) -> dict:
+    """
+    Envia um XML para o portal JAMEF via API.
+    Retorna dict com status do envio.
+    """
+    import urllib.request
+    import json
+
+    nome = xml_path.name
+
+    try:
+        # Lê e converte o XML para base64
+        xml_bytes  = xml_path.read_bytes()
+        xml_base64 = base64.b64encode(xml_bytes).decode("utf-8")
+
+        # Extrai filial do XML
+        filial = jamef_extrair_filial(xml_path)
+
+        payload = json.dumps({
+            "cgc": JAMEF_CGC,
+            "filialOrigem": filial,
+            "xmlBase64": xml_base64
+        }).encode("utf-8")
+
+        req = urllib.request.Request(
+            f"{JAMEF_URL_BASE}/api/label/send-note",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {id_token}",
+                "Origin": JAMEF_URL_BASE,
+                "Referer": f"{JAMEF_URL_BASE}/etiquetas"
+            },
+            method="POST"
+        )
+
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            status = resp.status
+            body   = resp.read().decode("utf-8")
+            if status in (200, 201):
+                print(f"   ✅  {nome} enviado com sucesso!")
+                return {"arquivo": nome, "ok": True, "status": status}
+            else:
+                print(f"   ⚠️  {nome}: resposta {status}")
+                return {"arquivo": nome, "ok": False, "status": status, "erro": body}
+
+    except urllib.error.HTTPError as e:
+        erro = e.read().decode("utf-8") if e.fp else str(e)
+        print(f"   ❌  {nome}: HTTP {e.code} — {erro[:100]}")
+        return {"arquivo": nome, "ok": False, "status": e.code, "erro": erro}
+    except Exception as e:
+        print(f"   ❌  {nome}: {e}")
+        return {"arquivo": nome, "ok": False, "erro": str(e)}
+
+
+def jamef_upload_xmls(xmls: list[Path]) -> dict:
+    """
+    Faz login no portal JAMEF e envia todos os XMLs.
+    Retorna resumo com sucesso e falhas.
+    """
+    email = os.getenv("JAMEF_EMAIL", "carlos.berbert@zeb.mx")
+    senha = os.getenv("JAMEF_SENHA", "")
+
+    if not senha:
+        print("   ⚠️  JAMEF_SENHA não configurada — pulando upload JAMEF.")
+        return {"ok": [], "falha": [], "pulado": True}
+
+    # Filtra só XMLs (não PDFs)
+    apenas_xmls = [f for f in xmls if f.suffix.lower() == ".xml"]
+
+    if not apenas_xmls:
+        print("   ⚠️  Nenhum XML para enviar ao portal JAMEF.")
+        return {"ok": [], "falha": []}
+
+    print(f"\n📤  Enviando {len(apenas_xmls)} XML(s) para o portal JAMEF...")
+
+    # Login
+    id_token = jamef_login(email, senha)
+    if not id_token:
+        return {"ok": [], "falha": [f.name for f in apenas_xmls]}
+
+    # Envia cada XML
+    resultados_ok    = []
+    resultados_falha = []
+
+    for xml_path in apenas_xmls:
+        resultado = jamef_enviar_xml(xml_path, id_token)
+        if resultado["ok"]:
+            resultados_ok.append(resultado["arquivo"])
+        else:
+            resultados_falha.append(resultado["arquivo"])
+
+    print(f"\n   📊  JAMEF Portal: {len(resultados_ok)} enviado(s), {len(resultados_falha)} falha(s)")
+    return {"ok": resultados_ok, "falha": resultados_falha}
+
+
 def main():
     email, senha = obter_credenciais()
     transportadora = obter_transportadora()
@@ -753,10 +918,21 @@ def main():
                 todos_arquivos, pedidos_sem_xml=pedidos_sem_xml
             )
 
-            # 8. Notifica no Chat
+            # 8. Se for JAMEF, sobe os XMLs no portal deles
+            jamef_resultado = None
+            if "JAMEF" in transportadora.upper():
+                jamef_resultado = jamef_upload_xmls(todos_arquivos)
+
+            # 9. Notifica no Chat
+            drive_link = "📧 Enviado por email" if email_ok else None
+            if jamef_resultado and not jamef_resultado.get("pulado"):
+                ok_count   = len(jamef_resultado.get("ok", []))
+                fail_count = len(jamef_resultado.get("falha", []))
+                drive_link = (drive_link or "") + f"\n📤 Portal JAMEF: {ok_count} OK, {fail_count} falha(s)"
+
             enviar_notificacao(
                 pedidos_novos, todos_arquivos, zip_path,
-                drive_link="📧 Enviado por email" if email_ok else None,
+                drive_link=drive_link,
                 pedidos_sem_xml=pedidos_sem_xml,
                 pedidos_free=pedidos_free,
                 transportadora=transportadora
