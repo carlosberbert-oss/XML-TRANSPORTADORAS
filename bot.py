@@ -641,7 +641,7 @@ def capturar_screenshot(page, nome: str):
 #  PORTAL JAMEF — Login via AWS Cognito + Upload XMLs
 # ════════════════════════════════════════════════════════════
 
-def gmail_ler_codigo_mfa(remetente_filtro: str = "jamef", timeout_seg: int = 90) -> str | None:
+def gmail_ler_codigo_mfa(remetente_filtro: str = "jamef", timeout_seg: int = 120) -> str | None:
     """
     Lê o código MFA enviado pela JAMEF no Gmail.
     Busca pelo assunto: 'Portal Cliente Jamef - Código de Verificação MFA'
@@ -673,19 +673,35 @@ def gmail_ler_codigo_mfa(remetente_filtro: str = "jamef", timeout_seg: int = 90)
         service = build("gmail", "v1", credentials=creds)
 
         inicio = time.time()
-        # Marca o momento exato do login para ignorar emails anteriores
-        timestamp_inicio = int(inicio)
+        # IDs de mensagens já vistas (para não reprocessar emails antigos)
+        ids_vistos = set()
+
+        # Primeiro scan: marca todos os emails existentes como já vistos
+        try:
+            resultado_inicial = service.users().messages().list(
+                userId="me",
+                q='from:naoresponda@jamef.com.br subject:"Portal Cliente Jamef"',
+                maxResults=10
+            ).execute()
+            for msg in resultado_inicial.get("messages", []):
+                ids_vistos.add(msg["id"])
+            print(f"   ℹ️  {len(ids_vistos)} email(s) antigo(s) ignorado(s).")
+        except Exception:
+            pass
 
         while time.time() - inicio < timeout_seg:
-            # Busca apenas emails chegados APÓS o início desta execução
             resultado = service.users().messages().list(
                 userId="me",
-                q=f'from:naoresponda@jamef.com.br subject:"Portal Cliente Jamef" after:{timestamp_inicio}',
-                maxResults=3
+                q='from:naoresponda@jamef.com.br subject:"Portal Cliente Jamef"',
+                maxResults=5
             ).execute()
 
             mensagens = resultado.get("messages", [])
             for msg in mensagens:
+                # Pula emails que já existiam antes do login
+                if msg["id"] in ids_vistos:
+                    continue
+
                 msg_data = service.users().messages().get(
                     userId="me",
                     id=msg["id"],
