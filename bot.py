@@ -410,44 +410,106 @@ def criar_zip(arquivos: list[Path], carrier: str) -> Path:
 # ════════════════════════════════════════════════════════════
 #  UPLOAD GOOGLE DRIVE
 # ════════════════════════════════════════════════════════════
-def upload_para_drive(zip_path: Path, transportadora: str) -> str | None:
+# ════════════════════════════════════════════════════════════
+#  ENVIAR ZIP POR EMAIL (Gmail / Google Workspace)
+# ════════════════════════════════════════════════════════════
+def enviar_zip_por_email(zip_path: Path, transportadora: str, pedidos: list[dict],
+                          arquivos: list[Path], pedidos_sem_xml: list[dict] | None = None) -> bool:
+    """
+    Envia o ZIP com XMLs e PDFs por email para os destinatários configurados.
+    Usa SMTP do Gmail/Google Workspace com App Password.
+    """
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.base import MIMEBase
+    from email import encoders
+
+    GMAIL_USUARIO  = os.getenv("GMAIL_USUARIO", "carlos.berbert@zeb.mx")
+    GMAIL_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "")
+    DESTINATARIOS  = [
+        GMAIL_USUARIO,
+        "felipe.azevedo@zeb.mx",
+        "israel.lopes@zeb.mx",
+    ]
+
+    if not GMAIL_PASSWORD:
+        print("   ⚠️  GMAIL_APP_PASSWORD não configurado — pulando envio de email.")
+        return False
+
+    agora     = datetime.now().strftime("%d/%m/%Y %H:%M")
+    data_hoje = datetime.now().strftime("%d/%m/%Y")
+    pedidos_sem_xml = pedidos_sem_xml or []
+    pedidos_ok = [p for p in pedidos if p["docname"] not in {x["docname"] for x in pedidos_sem_xml}]
+
+    # ── Monta o corpo do email ───────────────────────────────
+    corpo = f"""
+    <html><body style="font-family: Arial, sans-serif; color: #1a1a1a;">
+    <div style="max-width:600px;margin:0 auto;padding:24px;">
+
+      <div style="background:#1F5C99;padding:20px;border-radius:8px;margin-bottom:24px;">
+        <h2 style="color:white;margin:0;">🚚 Bot XML Transportadoras</h2>
+        <p style="color:#a8c8e8;margin:4px 0 0;">Zebrands / Luuna — {agora}</p>
+      </div>
+
+      <h3 style="color:#1F5C99;">📦 {transportadora} — {data_hoje}</h3>
+
+      <table style="width:100%;border-collapse:collapse;margin-bottom:20px;">
+        <tr style="background:#f0f7fd;">
+          <td style="padding:10px;border:1px solid #daeaf8;font-weight:bold;">Pedidos processados</td>
+          <td style="padding:10px;border:1px solid #daeaf8;">{len(pedidos_ok)}</td>
+        </tr>
+        <tr>
+          <td style="padding:10px;border:1px solid #daeaf8;font-weight:bold;">Arquivos (XML + PDF)</td>
+          <td style="padding:10px;border:1px solid #daeaf8;">{len(arquivos)}</td>
+        </tr>
+        <tr style="background:#f0f7fd;">
+          <td style="padding:10px;border:1px solid #daeaf8;font-weight:bold;">ZIP anexado</td>
+          <td style="padding:10px;border:1px solid #daeaf8;">{zip_path.name}</td>
+        </tr>
+      </table>
+
+      {'<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;padding:12px;margin-bottom:16px;"><strong>⚠️ Pedidos sem XML/PDF:</strong><ul>' + ''.join(f"<li>{p['docname']}</li>" for p in pedidos_sem_xml) + '</ul></div>' if pedidos_sem_xml else ''}
+
+      <p style="color:#6b7280;font-size:12px;margin-top:24px;border-top:1px solid #e5e7eb;padding-top:12px;">
+        Enviado automaticamente pelo Bot XML Transportadoras — Zebrands/Luuna
+      </p>
+    </div>
+    </body></html>
+    """
+
     try:
-        from googleapiclient.discovery import build
-        from googleapiclient.http import MediaFileUpload
-        from google.oauth2.service_account import Credentials
+        print(f"\n📧  Enviando email para {len(DESTINATARIOS)} destinatário(s)...")
 
-        creds_raw = os.getenv("GOOGLE_CREDENTIALS", "")
-        if not creds_raw:
-            print("   ⚠️  GOOGLE_CREDENTIALS não configurado — pulando upload.")
-            return None
+        msg = MIMEMultipart()
+        msg["From"]    = GMAIL_USUARIO
+        msg["To"]      = ", ".join(DESTINATARIOS)
+        msg["Subject"] = f"[Bot XML] {transportadora} — {data_hoje} — {len(pedidos_ok)} pedido(s)"
 
-        creds_json = json.loads(base64.b64decode(creds_raw).decode("utf-8"))
-        creds = Credentials.from_service_account_info(
-            creds_json,
-            scopes=["https://www.googleapis.com/auth/drive"]
-        )
-        service = build("drive", "v3", credentials=creds)
+        msg.attach(MIMEText(corpo, "html"))
 
-        # Garante subpasta da transportadora
-        folder_id = _garantir_pasta_drive(service, transportadora)
+        # Anexa o ZIP
+        with open(zip_path, "rb") as f:
+            parte = MIMEBase("application", "zip")
+            parte.set_payload(f.read())
+            encoders.encode_base64(parte)
+            parte.add_header(
+                "Content-Disposition",
+                f"attachment; filename={zip_path.name}"
+            )
+            msg.attach(parte)
 
-        # Upload
-        file_metadata = {"name": zip_path.name, "parents": [folder_id]}
-        media = MediaFileUpload(str(zip_path), mimetype="application/zip")
-        arquivo = service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields="id, webViewLink"
-        ).execute()
+        # Envia via SMTP
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as servidor:
+            servidor.login(GMAIL_USUARIO, GMAIL_PASSWORD)
+            servidor.sendmail(GMAIL_USUARIO, DESTINATARIOS, msg.as_string())
 
-        link = arquivo.get("webViewLink", "")
-        print(f"   ✅  Upload no Drive concluído!")
-        print(f"   🔗  {link}")
-        return link
+        print(f"   ✅  Email enviado para: {', '.join(DESTINATARIOS)}")
+        return True
 
     except Exception as e:
-        print(f"   ❌  Erro no upload Drive: {e}")
-        return None
+        print(f"   ❌  Erro ao enviar email: {e}")
+        return False
 
 
 def _garantir_pasta_drive(service, transportadora: str) -> str:
@@ -685,13 +747,16 @@ def main():
             # 6. Cria ZIP
             zip_path = criar_zip(todos_arquivos, transportadora)
 
-            # 7. Upload no Google Drive
-            drive_link = upload_para_drive(zip_path, transportadora)
+            # 7. Envia ZIP por email
+            email_ok = enviar_zip_por_email(
+                zip_path, transportadora, pedidos_novos,
+                todos_arquivos, pedidos_sem_xml=pedidos_sem_xml
+            )
 
             # 8. Notifica no Chat
             enviar_notificacao(
                 pedidos_novos, todos_arquivos, zip_path,
-                drive_link=drive_link,
+                drive_link="📧 Enviado por email" if email_ok else None,
                 pedidos_sem_xml=pedidos_sem_xml,
                 pedidos_free=pedidos_free,
                 transportadora=transportadora
