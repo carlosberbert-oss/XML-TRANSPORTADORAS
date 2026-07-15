@@ -730,32 +730,29 @@ def _extrair_corpo_email(payload: dict) -> str:
 
 def jamef_login(email: str, senha: str) -> str | None:
     """
-    Faz login no portal JAMEF via AWS Cognito com MFA.
-    1. Inicia autenticação com email/senha
-    2. Aguarda código MFA no Gmail
-    3. Confirma o código e retorna o idToken
+    Faz login no portal JAMEF via API própria.
+    1. POST /api/auth/login → retorna session + challengeName EMAIL_MFA
+    2. Bot lê o código do Gmail
+    3. POST /api/auth/confirm-mfa → retorna o token
     """
     import urllib.request
     import json
 
     print("\n🔐  Fazendo login no portal JAMEF...")
 
-    # Passo 1: Inicia autenticação
+    # Passo 1: Login inicial
     payload = json.dumps({
-        "AuthFlow": "USER_PASSWORD_AUTH",
-        "ClientId": JAMEF_CLIENT_ID,
-        "AuthParameters": {
-            "USERNAME": email,
-            "PASSWORD": senha
-        }
+        "email": email,
+        "password": senha
     }).encode("utf-8")
 
     req = urllib.request.Request(
-        JAMEF_COGNITO_URL,
+        f"{JAMEF_URL_BASE}/api/auth/login",
         data=payload,
         headers={
-            "Content-Type": "application/x-amz-json-1.1",
-            "X-Amz-Target": "AWSCognitoIdentityProviderService.InitiateAuth"
+            "Content-Type": "application/json",
+            "Origin": JAMEF_URL_BASE,
+            "Referer": f"{JAMEF_URL_BASE}/login"
         },
         method="POST"
     )
@@ -764,56 +761,100 @@ def jamef_login(email: str, senha: str) -> str | None:
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8"))
 
-            # Login direto (sem MFA)
-            if "AuthenticationResult" in data:
-                print("   ✅  Login JAMEF OK (sem MFA)!")
-                return data["AuthenticationResult"]["IdToken"]
+        challenge = data.get("challengeName")
+        session   = data.get("session")
 
-            # MFA necessário
-            if data.get("ChallengeName") in ("SOFTWARE_TOKEN_MFA", "EMAIL_OTP", "CUSTOM_CHALLENGE"):
-                session    = data.get("Session")
-                challenge  = data.get("ChallengeName")
-                print(f"   🔐  MFA necessário: {challenge}")
+        print(f"   ℹ️  Challenge: {challenge}")
+        print(f"   ℹ️  Mensagem: {data.get('message', '')}")
 
-                # Lê o código do Gmail
-                codigo = gmail_ler_codigo_mfa()
-                if not codigo:
-                    print("   ❌  Não foi possível obter o código MFA.")
-                    return None
+        if challenge == "EMAIL_MFA" and session:
+            # Passo 2: Lê código MFA do Gmail
+            codigo = gmail_ler_codigo_mfa()
+            if not codigo:
+                print("   ❌  Código MFA não encontrado no Gmail.")
+                return None
 
-                # Passo 2: Confirma o código MFA
-                payload2 = json.dumps({
-                    "ChallengeName": challenge,
-                    "ClientId": JAMEF_CLIENT_ID,
-                    "Session": session,
-                    "ChallengeResponses": {
-                        "USERNAME": email,
-                        "SOFTWARE_TOKEN_MFA_CODE": codigo,
-                        "ANSWER": codigo
-                    }
-                }).encode("utf-8")
+            # Passo 3: Confirma MFA
+            return jamef_confirmar_mfa(email, codigo, session)
 
-                req2 = urllib.request.Request(
-                    JAMEF_COGNITO_URL,
-                    data=payload2,
-                    headers={
-                        "Content-Type": "application/x-amz-json-1.1",
-                        "X-Amz-Target": "AWSCognitoIdentityProviderService.RespondToAuthChallenge"
-                    },
-                    method="POST"
-                )
+        # Se por algum motivo retornou token direto
+        token = data.get("idToken") or data.get("token") or data.get("accessToken")
+        if token:
+            print("   ✅  Login JAMEF OK (sem MFA)!")
+            return token
 
-                with urllib.request.urlopen(req2, timeout=15) as resp2:
-                    data2 = json.loads(resp2.read().decode("utf-8"))
-                    if "AuthenticationResult" in data2:
-                        print("   ✅  Login JAMEF com MFA OK!")
-                        return data2["AuthenticationResult"]["IdToken"]
-                    else:
-                        print(f"   ❌  Falha no MFA: {data2}")
-                        return None
+        print(f"   ❌  Resposta inesperada: {str(data)[:200]}")
+        return None
 
+    except urllib.error.HTTPError as e:
+        erro = e.read().decode("utf-8") if e.fp else str(e)
+        print(f"   ❌  Erro HTTP {e.code}: {erro[:200]}")
+        return None
     except Exception as e:
         print(f"   ❌  Erro no login JAMEF: {e}")
+        return None
+
+
+def jamef_confirmar_mfa(email: str, codigo: str, session: str | None) -> str | None:
+    """Confirma o código MFA no portal JAMEF e retorna o idToken dos cookies."""
+    import urllib.request
+    import urllib.parse
+    import http.cookiejar
+    import json
+
+    print(f"   🔐  Confirmando código MFA: {codigo}")
+
+    payload = json.dumps({
+        "challengeName": "EMAIL_MFA",
+        "email": email,
+        "mfaCode": codigo,
+        "session": session
+    }).encode("utf-8")
+
+    # Usa CookieJar para capturar os cookies da resposta
+    cookie_jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(cookie_jar)
+    )
+
+    req = urllib.request.Request(
+        f"{JAMEF_URL_BASE}/api/auth/confirm-mfa",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Origin": JAMEF_URL_BASE,
+            "Referer": f"{JAMEF_URL_BASE}/login"
+        },
+        method="POST"
+    )
+
+    try:
+        with opener.open(req, timeout=15) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+            print(f"   ℹ️  Resposta confirm-mfa: {body}")
+
+        # Extrai idToken dos cookies
+        for cookie in cookie_jar:
+            if cookie.name == "idToken":
+                print("   ✅  MFA confirmado! idToken obtido dos cookies.")
+                return cookie.value
+
+        # Fallback: tenta accessToken
+        for cookie in cookie_jar:
+            if cookie.name == "accessToken":
+                print("   ✅  MFA confirmado! accessToken obtido dos cookies.")
+                return cookie.value
+
+        print(f"   ❌  Token não encontrado nos cookies.")
+        print(f"   ℹ️  Cookies recebidos: {[c.name for c in cookie_jar]}")
+        return None
+
+    except urllib.error.HTTPError as e:
+        erro = e.read().decode("utf-8") if e.fp else str(e)
+        print(f"   ❌  confirm-mfa HTTP {e.code}: {erro[:200]}")
+        return None
+    except Exception as e:
+        print(f"   ❌  confirm-mfa erro: {e}")
         return None
 
 
@@ -867,7 +908,8 @@ def jamef_enviar_xml(xml_path: Path, id_token: str) -> dict:
             data=payload,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {id_token}",
+                "Authorization": id_token,
+                "Cookie": f"idToken={id_token}",
                 "Origin": JAMEF_URL_BASE,
                 "Referer": f"{JAMEF_URL_BASE}/etiquetas"
             },
