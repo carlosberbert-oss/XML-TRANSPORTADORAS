@@ -950,65 +950,52 @@ def jamef_extrair_dados_xml(xml_path: Path) -> dict:
 
 
 def jamef_verificar_status_etiqueta(chave: str, id_token: str, n_nf: str,
+                                     page=None,
                                      max_tentativas: int = 12, intervalo: int = 10) -> str:
     """
-    Verifica o status da etiqueta na JAMEF via Playwright
-    lendo a tabela da tela de etiquetas diretamente.
-    Status possíveis: 'Sucesso' ou 'NOTA FISCAL JA CADASTRADA'
+    Verifica o status da etiqueta na JAMEF lendo a tabela do site.
+    Usa o page do Playwright já aberto (não abre novo browser).
+    Status: 'Sucesso' ou 'NOTA FISCAL JA CADASTRADA'
     """
     import time
-    from playwright.sync_api import sync_playwright, TimeoutError as PT
 
     print(f"   ⏳  Aguardando processamento da etiqueta NF {n_nf}...")
+
+    if page is None:
+        print("   ⚠️  Page não disponível — pulando verificação de status.")
+        return "timeout"
 
     for tentativa in range(max_tentativas):
         time.sleep(intervalo)
         print(f"   ⏳  Verificando status NF {n_nf} (tentativa {tentativa+1}/{max_tentativas})...")
 
         try:
-            with sync_playwright() as pw:
-                browser = pw.chromium.launch(headless=True)
-                ctx     = browser.new_context()
-                pg      = ctx.new_page()
+            # Navega para a tela de etiquetas da JAMEF com cookie já injetado
+            page.goto(
+                f"{JAMEF_URL_BASE}/etiquetas",
+                wait_until="networkidle",
+                timeout=20_000
+            )
+            page.wait_for_timeout(3_000)
 
-                # Injeta o cookie de autenticação
-                ctx.add_cookies([{
-                    "name": "idToken",
-                    "value": id_token,
-                    "domain": "cliente.jamef.com.br",
-                    "path": "/"
-                }])
+            # Lê todas as linhas da tabela
+            linhas = page.locator("table tbody tr, .MuiTableBody-root tr").all()
 
-                pg.goto(
-                    f"{JAMEF_URL_BASE}/etiquetas",
-                    wait_until="networkidle",
-                    timeout=20_000
-                )
-                pg.wait_for_timeout(3_000)
+            for linha in linhas:
+                texto = linha.inner_text().replace("\n", " ").strip()
+                if str(n_nf) in texto:
+                    status_lower = texto.lower()
+                    print(f"   ℹ️  NF {n_nf}: {texto[:80]}")
 
-                # Lê todas as linhas da tabela
-                linhas = pg.locator("table tbody tr, .MuiTableBody-root tr").all()
-
-                for linha in linhas:
-                    texto = linha.inner_text().replace("\n", " ").strip()
-                    # Verifica se essa linha tem a NF que procuramos
-                    if str(n_nf) in texto:
-                        status_lower = texto.lower()
-                        print(f"   ℹ️  NF {n_nf} encontrada: {texto[:80]}")
-
-                        if "sucesso" in status_lower:
-                            browser.close()
-                            print(f"   ✅  NF {n_nf}: Sucesso!")
-                            return "sucesso"
-                        elif "ja cadastrada" in status_lower or "já cadastrada" in status_lower:
-                            browser.close()
-                            print(f"   ℹ️  NF {n_nf}: Nota Fiscal Já Cadastrada.")
-                            return "ja_cadastrada"
-                        else:
-                            print(f"   ⏳  NF {n_nf}: ainda processando...")
-                            break
-
-                browser.close()
+                    if "sucesso" in status_lower:
+                        print(f"   ✅  NF {n_nf}: Sucesso!")
+                        return "sucesso"
+                    elif "ja cadastrada" in status_lower or "já cadastrada" in status_lower:
+                        print(f"   ℹ️  NF {n_nf}: Já cadastrada.")
+                        return "ja_cadastrada"
+                    else:
+                        print(f"   ⏳  NF {n_nf}: ainda processando...")
+                        break
 
         except Exception as e:
             print(f"   ⚠️  Erro na verificação (tentativa {tentativa+1}): {e}")
@@ -1265,7 +1252,19 @@ def jamef_upload_xmls(xmls: list[Path], page=None) -> dict:
                 continue
 
             # Aguarda processamento e verifica status
-            status_etiqueta = jamef_verificar_status_etiqueta(chave, id_token, n_nf)
+            # Injeta cookie da JAMEF no page antes de verificar status
+            if page:
+                try:
+                    page.context.add_cookies([{
+                        "name": "idToken",
+                        "value": id_token,
+                        "domain": "cliente.jamef.com.br",
+                        "path": "/"
+                    }])
+                except Exception:
+                    pass
+
+            status_etiqueta = jamef_verificar_status_etiqueta(chave, id_token, n_nf, page=page)
 
             if status_etiqueta == "sucesso":
                 # Baixa etiqueta (pode já ter sido salva na verificação)
