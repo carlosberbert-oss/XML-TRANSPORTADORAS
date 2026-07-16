@@ -1,16 +1,8 @@
 name: Bot XML Transportadoras
 
 on:
-  # ── JAMEF: 09:30 e 10:30 (Brasília = UTC-3 → 12:30 e 13:30 UTC)
-  # ── FITLOG: 14:30 (Brasília → 17:30 UTC)
-  # ── MIRA: 15:00 (Brasília → 18:00 UTC)
-  schedule:
-    - cron: '30 12 * * 1-5'   # JAMEF 09:30 BRT
-    - cron: '30 13 * * 1-5'   # JAMEF 10:30 BRT
-    - cron: '30 17 * * 1-5'   # FITLOG 14:30 BRT
-    - cron: '0 18 * * 1-5'    # MIRA 15:00 BRT
-
-  # Disparo manual (pelo painel ou pelo GitHub)
+  # Disparado pelo cron-job.org nos horários configurados:
+  # JAMEF: 09:30 e 10:30 | FITLOG: 14:30 | MIRA: 15:00 (Brasília)
   workflow_dispatch:
     inputs:
       transportadora:
