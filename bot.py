@@ -952,8 +952,8 @@ def jamef_extrair_dados_xml(xml_path: Path) -> dict:
 def jamef_verificar_status_etiqueta(chave: str, id_token: str, n_nf: str,
                                      max_tentativas: int = 12, intervalo: int = 10) -> str:
     """
-    Verifica o status da etiqueta na JAMEF após enviar o XML.
-    Aguarda até max_tentativas * intervalo segundos pelo processamento.
+    Verifica o status da etiqueta na JAMEF consultando a listagem.
+    Usa GET /api/label/list-notes-for-cgc para ver o status de cada NF.
     Retorna: 'sucesso', 'ja_cadastrada', 'erro', ou 'timeout'
     """
     import urllib.request
@@ -967,65 +967,49 @@ def jamef_verificar_status_etiqueta(chave: str, id_token: str, n_nf: str,
         print(f"   ⏳  Verificando status NF {n_nf} (tentativa {tentativa+1}/{max_tentativas})...")
 
         try:
-            # Tenta buscar a etiqueta — se retornar PDF, está pronta
-            payload = json.dumps({"chave": chave}).encode("utf-8")
+            url = f"{JAMEF_URL_BASE}/api/label/list-notes-for-cgc?cgc={JAMEF_CGC}&filial=57"
             req = urllib.request.Request(
-                f"{JAMEF_URL_BASE}/api/label/render",
-                data=payload,
+                url,
                 headers={
-                    "Content-Type": "application/json",
                     "Authorization": id_token,
                     "Cookie": f"idToken={id_token}",
                     "Origin": JAMEF_URL_BASE,
                     "Referer": f"{JAMEF_URL_BASE}/etiquetas"
                 },
-                method="POST"
+                method="GET"
             )
             with urllib.request.urlopen(req, timeout=15) as resp:
-                content_type = resp.headers.get("Content-Type", "")
-                body = resp.read()
+                data = json.loads(resp.read().decode("utf-8"))
 
-                # Se retornou PDF, etiqueta está pronta com sucesso
-                if "pdf" in content_type.lower() or body[:4] == b"%PDF":
-                    print(f"   ✅  Etiqueta NF {n_nf} processada com sucesso!")
-                    # Salva o PDF
-                    caminho = PASTA_XMLS / f"etiqueta_JAMEF_NF{n_nf}.pdf"
-                    caminho.write_bytes(body)
-                    return "sucesso"
+                # Procura a NF na listagem
+                notas = data if isinstance(data, list) else data.get("notes", data.get("data", []))
 
-                # Tenta ler como JSON para ver o status
-                try:
-                    data = json.loads(body.decode("utf-8"))
-                    msg  = str(data).lower()
-                    if "sucesso" in msg or "success" in msg:
-                        print(f"   ✅  NF {n_nf}: sucesso!")
-                        return "sucesso"
-                    elif "cadastrada" in msg or "duplicada" in msg or "already" in msg:
-                        print(f"   ℹ️  NF {n_nf}: etiqueta já cadastrada.")
-                        return "ja_cadastrada"
-                    elif "processando" in msg or "processing" in msg or "aguarde" in msg:
-                        print(f"   ⏳  NF {n_nf}: ainda processando...")
-                        continue
-                except Exception:
-                    pass
+                for nota in notas:
+                    # Verifica se é a NF que queremos
+                    nf_numero = str(nota.get("nNF", nota.get("numeroNF", nota.get("nf", ""))))
+                    status    = str(nota.get("status", nota.get("Status", ""))).lower()
+
+                    if nf_numero == str(n_nf):
+                        print(f"   ℹ️  NF {n_nf} status: {status}")
+
+                        if "sucesso" in status or "success" in status or status == "s":
+                            print(f"   ✅  NF {n_nf}: etiqueta processada com sucesso!")
+                            return "sucesso"
+                        elif "cadastrada" in status or "duplicada" in status or "existente" in status:
+                            print(f"   ℹ️  NF {n_nf}: etiqueta já cadastrada.")
+                            return "ja_cadastrada"
+                        elif "erro" in status or "error" in status or "falha" in status:
+                            print(f"   ❌  NF {n_nf}: erro no processamento.")
+                            return "erro"
+                        else:
+                            # Ainda processando
+                            print(f"   ⏳  NF {n_nf}: status={status}, aguardando...")
+                            break
 
         except urllib.error.HTTPError as e:
-            erro_body = ""
-            try:
-                erro_body = e.read().decode("utf-8").lower()
-            except Exception:
-                pass
-            if "cadastrada" in erro_body or "duplicada" in erro_body:
-                print(f"   ℹ️  NF {n_nf}: etiqueta já cadastrada.")
-                return "ja_cadastrada"
-            elif e.code == 202:  # accepted - ainda processando
-                print(f"   ⏳  NF {n_nf}: ainda processando (HTTP 202)...")
-                continue
-            elif e.code in (404, 400):
-                print(f"   ⏳  NF {n_nf}: aguardando processamento (HTTP {e.code})...")
-                continue
+            print(f"   ⚠️  Erro HTTP {e.code} na verificação — tentando novamente...")
         except Exception as e:
-            print(f"   ⚠️  NF {n_nf}: {e}")
+            print(f"   ⚠️  Erro na verificação: {e} — tentando novamente...")
 
     print(f"   ⚠️  NF {n_nf}: timeout aguardando etiqueta.")
     return "timeout"
