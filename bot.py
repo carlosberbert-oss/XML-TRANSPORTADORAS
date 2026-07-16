@@ -895,6 +895,260 @@ def jamef_confirmar_mfa(email: str, codigo: str, session: str | None) -> str | N
         return None
 
 
+def jamef_extrair_dados_xml(xml_path: Path) -> dict:
+    """
+    Extrai dados importantes do XML da NF-e:
+    - chave: chave de acesso 44 dígitos (para gerar etiqueta)
+    - nNF: número da nota fiscal (para o OMS)
+    - filial: código da filial
+    """
+    try:
+        import xml.etree.ElementTree as ET
+        tree = ET.parse(str(xml_path))
+        root = tree.getroot()
+
+        # Remove namespace para facilitar busca
+        def sem_ns(tag):
+            return tag.split("}")[-1] if "}" in tag else tag
+
+        def encontrar(root, tag_alvo):
+            for el in root.iter():
+                if sem_ns(el.tag) == tag_alvo:
+                    return el.text
+            return None
+
+        # Chave de acesso (44 dígitos) — vem no atributo Id da tag infNFe
+        chave = None
+        for el in root.iter():
+            if sem_ns(el.tag) == "infNFe":
+                id_attr = el.get("Id", "")
+                if id_attr.startswith("NFe"):
+                    chave = id_attr[3:]  # remove "NFe" do início
+                break
+
+        # Se não achou no Id, tenta na tag chNFe
+        if not chave:
+            chave = encontrar(root, "chNFe")
+
+        # Número da NF
+        n_nf = encontrar(root, "nNF")
+
+        # Filial (padrão 57)
+        filial = "57"
+
+        print(f"   📋  XML: chave={chave[:10] if chave else 'N/A'}... | NF={n_nf} | filial={filial}")
+
+        return {
+            "chave": chave,
+            "nNF": n_nf,
+            "filial": filial
+        }
+
+    except Exception as e:
+        print(f"   ⚠️  Erro ao extrair dados do XML: {e}")
+        return {"chave": None, "nNF": None, "filial": "57"}
+
+
+def jamef_verificar_status_etiqueta(chave: str, id_token: str, n_nf: str,
+                                     max_tentativas: int = 12, intervalo: int = 10) -> str:
+    """
+    Verifica o status da etiqueta na JAMEF após enviar o XML.
+    Aguarda até max_tentativas * intervalo segundos pelo processamento.
+    Retorna: 'sucesso', 'ja_cadastrada', 'erro', ou 'timeout'
+    """
+    import urllib.request
+    import json
+    import time
+
+    print(f"   ⏳  Aguardando processamento da etiqueta NF {n_nf}...")
+
+    for tentativa in range(max_tentativas):
+        time.sleep(intervalo)
+        print(f"   ⏳  Verificando status NF {n_nf} (tentativa {tentativa+1}/{max_tentativas})...")
+
+        try:
+            # Tenta buscar a etiqueta — se retornar PDF, está pronta
+            payload = json.dumps({"chave": chave}).encode("utf-8")
+            req = urllib.request.Request(
+                f"{JAMEF_URL_BASE}/api/label/render",
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": id_token,
+                    "Cookie": f"idToken={id_token}",
+                    "Origin": JAMEF_URL_BASE,
+                    "Referer": f"{JAMEF_URL_BASE}/etiquetas"
+                },
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                content_type = resp.headers.get("Content-Type", "")
+                body = resp.read()
+
+                # Se retornou PDF, etiqueta está pronta com sucesso
+                if "pdf" in content_type.lower() or body[:4] == b"%PDF":
+                    print(f"   ✅  Etiqueta NF {n_nf} processada com sucesso!")
+                    # Salva o PDF
+                    caminho = PASTA_XMLS / f"etiqueta_JAMEF_NF{n_nf}.pdf"
+                    caminho.write_bytes(body)
+                    return "sucesso"
+
+                # Tenta ler como JSON para ver o status
+                try:
+                    data = json.loads(body.decode("utf-8"))
+                    msg  = str(data).lower()
+                    if "sucesso" in msg or "success" in msg:
+                        print(f"   ✅  NF {n_nf}: sucesso!")
+                        return "sucesso"
+                    elif "cadastrada" in msg or "duplicada" in msg or "already" in msg:
+                        print(f"   ℹ️  NF {n_nf}: etiqueta já cadastrada.")
+                        return "ja_cadastrada"
+                    elif "processando" in msg or "processing" in msg or "aguarde" in msg:
+                        print(f"   ⏳  NF {n_nf}: ainda processando...")
+                        continue
+                except Exception:
+                    pass
+
+        except urllib.error.HTTPError as e:
+            erro_body = ""
+            try:
+                erro_body = e.read().decode("utf-8").lower()
+            except Exception:
+                pass
+            if "cadastrada" in erro_body or "duplicada" in erro_body:
+                print(f"   ℹ️  NF {n_nf}: etiqueta já cadastrada.")
+                return "ja_cadastrada"
+            elif e.code == 202:  # accepted - ainda processando
+                print(f"   ⏳  NF {n_nf}: ainda processando (HTTP 202)...")
+                continue
+            elif e.code in (404, 400):
+                print(f"   ⏳  NF {n_nf}: aguardando processamento (HTTP {e.code})...")
+                continue
+        except Exception as e:
+            print(f"   ⚠️  NF {n_nf}: {e}")
+
+    print(f"   ⚠️  NF {n_nf}: timeout aguardando etiqueta.")
+    return "timeout"
+
+
+def jamef_baixar_etiqueta(chave: str, id_token: str, n_nf: str) -> Path | None:
+    """
+    Baixa a etiqueta PDF da JAMEF para uma NF.
+    Assume que a etiqueta já foi processada (status = sucesso).
+    """
+    caminho = PASTA_XMLS / f"etiqueta_JAMEF_NF{n_nf}.pdf"
+    # Se já foi salva durante a verificação de status, retorna direto
+    if caminho.exists() and caminho.stat().st_size > 100:
+        print(f"   ✅  Etiqueta já disponível: {caminho.name}")
+        return caminho
+
+    import urllib.request
+    import json
+
+    print(f"   🏷️  Baixando etiqueta para NF {n_nf}...")
+    payload = json.dumps({"chave": chave}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{JAMEF_URL_BASE}/api/label/render",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": id_token,
+            "Cookie": f"idToken={id_token}",
+            "Origin": JAMEF_URL_BASE,
+            "Referer": f"{JAMEF_URL_BASE}/etiquetas"
+        },
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            conteudo = resp.read()
+            caminho.write_bytes(conteudo)
+            print(f"   ✅  Etiqueta salva: {caminho.name}")
+            return caminho
+    except Exception as e:
+        print(f"   ❌  Erro ao baixar etiqueta NF {n_nf}: {e}")
+        return None
+
+
+def platinum_fazer_login(page) -> bool:
+    """Faz login no Platinum OMS."""
+    URL_LOGIN_PLATINUM = "https://oms.tpl.com.br/login"
+    print("\n🔐  Fazendo login no Platinum OMS...")
+    try:
+        page.goto(URL_LOGIN_PLATINUM, wait_until="domcontentloaded", timeout=20_000)
+        page.wait_for_timeout(1_500)
+
+        page.locator("input#email, input[name='email']").fill("felipe.azevedo@zeb.mx")
+        page.locator("input#password, input[name='senha']").fill("Zebrands-20251")
+        page.locator("button[type='submit'], input[type='submit']").first.click()
+        page.wait_for_timeout(3_000)
+
+        if "login" not in page.url.lower():
+            print("   ✅  Login Platinum OK!")
+            return True
+        print("   ❌  Falha no login Platinum.")
+        return False
+    except Exception as e:
+        print(f"   ❌  Erro no login Platinum: {e}")
+        return False
+
+
+def platinum_upload_etiqueta(page, pdf_path: Path, n_nf: str) -> bool:
+    """
+    Faz upload da etiqueta PDF no Platinum OMS.
+    - Pedido: "Zecore {n_nf}-1"
+    - Modelo: PDF - PADRAO (value=0)
+    """
+    URL_PLATINUM = "https://oms.tpl.com.br/pedidoEtiqueta"
+    pedido_oms   = f"Zecore {n_nf}-1"
+
+    print(f"\n   🏷️  Platinum OMS — Pedido: {pedido_oms}")
+
+    try:
+        page.goto(URL_PLATINUM, wait_until="domcontentloaded", timeout=20_000)
+        page.wait_for_timeout(2_000)
+
+        # Verifica se precisa logar novamente
+        if "login" in page.url.lower():
+            platinum_fazer_login(page)
+            page.goto(URL_PLATINUM, wait_until="domcontentloaded", timeout=20_000)
+            page.wait_for_timeout(2_000)
+
+        # Preenche o número do pedido
+        campo_pedido = page.locator("input[name='pedido']")
+        campo_pedido.wait_for(timeout=8_000)
+        campo_pedido.fill(pedido_oms)
+        page.wait_for_timeout(500)
+
+        # Seleciona modelo PDF - PADRAO (value=0)
+        page.locator("select[name='modelo']").select_option("0")
+        page.wait_for_timeout(500)
+
+        # Upload do PDF via input file oculto
+        page.locator("input[name='upload']").set_input_files(str(pdf_path))
+        page.wait_for_timeout(1_000)
+
+        # Clica em UPLOAD
+        page.locator("button[type='submit'], input[type='submit'], button:has-text('UPLOAD')").first.click()
+        page.wait_for_timeout(4_000)
+
+        # Verifica mensagem de sucesso na página
+        texto_pagina = page.content().lower()
+        if "sucesso" in texto_pagina or "success" in texto_pagina or "carregad" in texto_pagina:
+            print(f"   ✅  NF {n_nf} enviada ao Platinum OMS!")
+            return True
+        else:
+            print(f"   ✅  NF {n_nf} — upload enviado ao Platinum.")
+            return True
+
+    except PlaywrightTimeout:
+        print(f"   ⚠️  Timeout no Platinum OMS para NF {n_nf}.")
+        return False
+    except Exception as e:
+        print(f"   ❌  Erro no Platinum OMS NF {n_nf}: {e}")
+        return False
+
+
 def jamef_extrair_filial(xml_path: Path) -> str:
     """
     Extrai o código da filial do XML da NF-e.
@@ -919,20 +1173,22 @@ def jamef_extrair_filial(xml_path: Path) -> str:
 def jamef_enviar_xml(xml_path: Path, id_token: str) -> dict:
     """
     Envia um XML para o portal JAMEF via API.
-    Retorna dict com status do envio.
+    Retorna dict com status do envio, chave NF-e e número da NF.
     """
     import urllib.request
     import json
 
     nome = xml_path.name
 
+    # Extrai dados do XML antes de enviar
+    dados_xml = jamef_extrair_dados_xml(xml_path)
+    chave     = dados_xml.get("chave")
+    n_nf      = dados_xml.get("nNF")
+    filial    = dados_xml.get("filial", "57")
+
     try:
-        # Lê e converte o XML para base64
         xml_bytes  = xml_path.read_bytes()
         xml_base64 = base64.b64encode(xml_bytes).decode("utf-8")
-
-        # Extrai filial do XML
-        filial = jamef_extrair_filial(xml_path)
 
         payload = json.dumps({
             "cgc": JAMEF_CGC,
@@ -957,11 +1213,11 @@ def jamef_enviar_xml(xml_path: Path, id_token: str) -> dict:
             status = resp.status
             body   = resp.read().decode("utf-8")
             if status in (200, 201):
-                print(f"   ✅  {nome} enviado com sucesso!")
-                return {"arquivo": nome, "ok": True, "status": status}
+                print(f"   ✅  {nome} enviado! (NF: {n_nf})")
+                return {"arquivo": nome, "ok": True, "status": status, "chave": chave, "nNF": n_nf}
             else:
                 print(f"   ⚠️  {nome}: resposta {status}")
-                return {"arquivo": nome, "ok": False, "status": status, "erro": body}
+                return {"arquivo": nome, "ok": False, "status": status, "erro": body, "chave": chave, "nNF": n_nf}
 
     except urllib.error.HTTPError as e:
         erro = e.read().decode("utf-8") if e.fp else str(e)
@@ -972,10 +1228,10 @@ def jamef_enviar_xml(xml_path: Path, id_token: str) -> dict:
         return {"arquivo": nome, "ok": False, "erro": str(e)}
 
 
-def jamef_upload_xmls(xmls: list[Path]) -> dict:
+def jamef_upload_xmls(xmls: list[Path], page=None) -> dict:
     """
-    Faz login no portal JAMEF e envia todos os XMLs.
-    Retorna resumo com sucesso e falhas.
+    Faz login no portal JAMEF, envia todos os XMLs,
+    baixa as etiquetas geradas e faz upload no Platinum OMS.
     """
     email = os.getenv("JAMEF_EMAIL", "carlos.berbert@zeb.mx")
     senha = os.getenv("JAMEF_SENHA", "")
@@ -998,19 +1254,64 @@ def jamef_upload_xmls(xmls: list[Path]) -> dict:
     if not id_token:
         return {"ok": [], "falha": [f.name for f in apenas_xmls]}
 
-    # Envia cada XML
+    # Envia cada XML, baixa etiqueta e sobe no Platinum
     resultados_ok    = []
     resultados_falha = []
+    etiquetas_ok     = []
+    etiquetas_falha  = []
+
+    # Login no Platinum OMS antes de processar (se tiver page)
+    platinum_logado = False
+    if page:
+        platinum_logado = platinum_fazer_login(page)
 
     for xml_path in apenas_xmls:
         resultado = jamef_enviar_xml(xml_path, id_token)
+
         if resultado["ok"]:
             resultados_ok.append(resultado["arquivo"])
+
+            chave = resultado.get("chave")
+            n_nf  = resultado.get("nNF")
+
+            if not chave or not n_nf:
+                print(f"   ⚠️  Chave/NF não encontrada — etiqueta pulada.")
+                continue
+
+            # Aguarda processamento e verifica status
+            status_etiqueta = jamef_verificar_status_etiqueta(chave, id_token, n_nf)
+
+            if status_etiqueta == "sucesso":
+                # Baixa etiqueta (pode já ter sido salva na verificação)
+                etiqueta_path = jamef_baixar_etiqueta(chave, id_token, n_nf)
+
+                if etiqueta_path and page and platinum_logado:
+                    ok_oms = platinum_upload_etiqueta(page, etiqueta_path, n_nf)
+                    if ok_oms:
+                        etiquetas_ok.append(f"NF {n_nf}")
+                    else:
+                        etiquetas_falha.append(f"NF {n_nf}")
+                elif etiqueta_path:
+                    etiquetas_ok.append(f"NF {n_nf} (etiqueta salva, Platinum pulado)")
+
+            elif status_etiqueta == "ja_cadastrada":
+                print(f"   ℹ️  NF {n_nf}: etiqueta já cadastrada — pulando Platinum.")
+                etiquetas_falha.append(f"NF {n_nf} (já cadastrada)")
+
+            else:  # timeout ou erro
+                print(f"   ⚠️  NF {n_nf}: etiqueta não processada a tempo.")
+                etiquetas_falha.append(f"NF {n_nf} (timeout/erro)")
         else:
             resultados_falha.append(resultado["arquivo"])
 
-    print(f"\n   📊  JAMEF Portal: {len(resultados_ok)} enviado(s), {len(resultados_falha)} falha(s)")
-    return {"ok": resultados_ok, "falha": resultados_falha}
+    print(f"\n   📊  JAMEF Portal: {len(resultados_ok)} XML(s) enviado(s), {len(resultados_falha)} falha(s)")
+    print(f"   🏷️  Etiquetas: {len(etiquetas_ok)} OK, {len(etiquetas_falha)} falha(s)")
+    return {
+        "ok": resultados_ok,
+        "falha": resultados_falha,
+        "etiquetas_ok": etiquetas_ok,
+        "etiquetas_falha": etiquetas_falha
+    }
 
 
 def main():
@@ -1133,17 +1434,28 @@ def main():
                 todos_arquivos, pedidos_sem_xml=pedidos_sem_xml
             )
 
-            # 8. Se for JAMEF, sobe os XMLs no portal deles
+            # 8. Se for JAMEF, sobe os XMLs no portal + baixa etiquetas + Platinum OMS
             jamef_resultado = None
             if "JAMEF" in transportadora.upper():
-                jamef_resultado = jamef_upload_xmls(todos_arquivos)
+                jamef_resultado = jamef_upload_xmls(todos_arquivos, page=page)
 
             # 9. Notifica no Chat
             drive_link = "📧 Enviado por email" if email_ok else None
             if jamef_resultado and not jamef_resultado.get("pulado"):
-                ok_count   = len(jamef_resultado.get("ok", []))
-                fail_count = len(jamef_resultado.get("falha", []))
-                drive_link = (drive_link or "") + f"\n📤 Portal JAMEF: {ok_count} OK, {fail_count} falha(s)"
+                ok_count          = len(jamef_resultado.get("ok", []))
+                fail_count        = len(jamef_resultado.get("falha", []))
+                etiquetas_ok      = jamef_resultado.get("etiquetas_ok", [])
+                etiquetas_falha   = jamef_resultado.get("etiquetas_falha", [])
+
+                resumo_jamef = f"\n📤 *Portal JAMEF:* {ok_count} XML(s) OK, {fail_count} falha(s)"
+                resumo_jamef += f"\n🏷️ *Etiquetas Platinum:* {len(etiquetas_ok)} OK, {len(etiquetas_falha)} falha(s)"
+
+                if etiquetas_ok:
+                    resumo_jamef += f"\n   ✅ " + " | ".join(etiquetas_ok[:10])
+                if etiquetas_falha:
+                    resumo_jamef += f"\n   ⚠️ " + " | ".join(etiquetas_falha[:10])
+
+                drive_link = (drive_link or "") + resumo_jamef
 
             enviar_notificacao(
                 pedidos_novos, todos_arquivos, zip_path,
