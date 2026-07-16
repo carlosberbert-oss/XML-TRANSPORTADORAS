@@ -420,8 +420,8 @@ def criar_zip(arquivos: list[Path], carrier: str) -> Path:
 def enviar_zip_por_email(zip_path: Path, transportadora: str, pedidos: list[dict],
                           arquivos: list[Path], pedidos_sem_xml: list[dict] | None = None) -> bool:
     """
-    Envia o ZIP com XMLs e PDFs por email para os destinatários configurados.
-    Usa SMTP do Gmail/Google Workspace com App Password.
+    Envia o ZIP com XMLs e PDFs por email.
+    Destinatários e assunto variam por transportadora.
     """
     import smtplib
     from email.mime.multipart import MIMEMultipart
@@ -431,22 +431,37 @@ def enviar_zip_por_email(zip_path: Path, transportadora: str, pedidos: list[dict
 
     GMAIL_USUARIO  = os.getenv("GMAIL_USUARIO", "carlos.berbert@zeb.mx")
     GMAIL_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "")
-    DESTINATARIOS  = [
-        GMAIL_USUARIO,
-        "felipe.azevedo@zeb.mx",
-        "israel.lopes@zeb.mx",
-    ]
 
     if not GMAIL_PASSWORD:
         print("   ⚠️  GMAIL_APP_PASSWORD não configurado — pulando envio de email.")
         return False
 
-    agora     = datetime.now().strftime("%d/%m/%Y %H:%M")
     data_hoje = datetime.now().strftime("%d/%m/%Y")
+    agora     = datetime.now().strftime("%d/%m/%Y %H:%M")
     pedidos_sem_xml = pedidos_sem_xml or []
     pedidos_ok = [p for p in pedidos if p["docname"] not in {x["docname"] for x in pedidos_sem_xml}]
 
-    # ── Monta o corpo do email ───────────────────────────────
+    # ── Configuração por transportadora ─────────────────────
+    carrier_upper = transportadora.upper()
+
+    if "FITLOG" in carrier_upper:
+        destinatarios_para = ["Adm.operacional@fitlogistica.com.br"]
+        destinatarios_cc   = [GMAIL_USUARIO, "felipe.azevedo@zeb.mx", "israel.lopes@zeb.mx"]
+        assunto = f"COLETA LUUNA {data_hoje} - FITLOG"
+
+    elif "MIRA" in carrier_upper:
+        destinatarios_para = ["expedicao@mira.com.br"]
+        destinatarios_cc   = [GMAIL_USUARIO, "felipe.azevedo@zeb.mx", "israel.lopes@zeb.mx"]
+        assunto = f"COLETA LUUNA {data_hoje} - MIRA"
+
+    else:  # JAMEF — mantém como estava
+        destinatarios_para = [GMAIL_USUARIO, "felipe.azevedo@zeb.mx", "israel.lopes@zeb.mx"]
+        destinatarios_cc   = []
+        assunto = f"COLETA LUUNA {data_hoje} - JAMEF"
+
+    todos_destinatarios = destinatarios_para + destinatarios_cc
+
+    # ── Corpo do email ───────────────────────────────────────
     corpo = f"""
     <html><body style="font-family: Arial, sans-serif; color: #1a1a1a;">
     <div style="max-width:600px;margin:0 auto;padding:24px;">
@@ -483,12 +498,17 @@ def enviar_zip_por_email(zip_path: Path, transportadora: str, pedidos: list[dict
     """
 
     try:
-        print(f"\n📧  Enviando email para {len(DESTINATARIOS)} destinatário(s)...")
+        print(f"\n📧  Enviando email — Assunto: {assunto}")
+        print(f"   Para: {', '.join(destinatarios_para)}")
+        if destinatarios_cc:
+            print(f"   CC:   {', '.join(destinatarios_cc)}")
 
         msg = MIMEMultipart()
         msg["From"]    = GMAIL_USUARIO
-        msg["To"]      = ", ".join(DESTINATARIOS)
-        msg["Subject"] = f"[Bot XML] {transportadora} — {data_hoje} — {len(pedidos_ok)} pedido(s)"
+        msg["To"]      = ", ".join(destinatarios_para)
+        msg["Subject"] = assunto
+        if destinatarios_cc:
+            msg["Cc"] = ", ".join(destinatarios_cc)
 
         msg.attach(MIMEText(corpo, "html"))
 
@@ -506,9 +526,9 @@ def enviar_zip_por_email(zip_path: Path, transportadora: str, pedidos: list[dict
         # Envia via SMTP
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as servidor:
             servidor.login(GMAIL_USUARIO, GMAIL_PASSWORD)
-            servidor.sendmail(GMAIL_USUARIO, DESTINATARIOS, msg.as_string())
+            servidor.sendmail(GMAIL_USUARIO, todos_destinatarios, msg.as_string())
 
-        print(f"   ✅  Email enviado para: {', '.join(DESTINATARIOS)}")
+        print(f"   ✅  Email enviado com sucesso!")
         return True
 
     except Exception as e:
