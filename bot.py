@@ -446,7 +446,7 @@ def enviar_zip_por_email(zip_path: Path, transportadora: str, pedidos: list[dict
 
     if "FITLOG" in carrier_upper:
         destinatarios_para = ["Adm.operacional@fitlogistica.com.br"]
-        destinatarios_cc   = [GMAIL_USUARIO, "felipe.azevedo@zeb.mx", "israel.lopes@zeb.mx"]
+        destinatarios_cc   = ["expedicao.sp@fitlogistica.com.br", GMAIL_USUARIO, "felipe.azevedo@zeb.mx", "israel.lopes@zeb.mx"]
         assunto = f"COLETA LUUNA {data_hoje} - FITLOG"
 
     elif "MIRA" in carrier_upper:
@@ -618,7 +618,9 @@ def enviar_notificacao(pedidos, arquivos, zip_path, drive_link=None,
         linhas.append(f"📁 *Drive:* {drive_link}")
 
     if pedidos_free:
-        linhas.append(f"\n🎁 *FREE- ignorados:* {len(pedidos_free)}")
+        linhas.append(f"\n🎁 *FREE- ignorados ({len(pedidos_free)}):*")
+        for p in pedidos_free:
+            linhas.append(f"   • `{p['docname']}`")
 
     _enviar_mensagem_chat("\n".join(linhas))
 
@@ -633,7 +635,9 @@ def enviar_notificacao_vazia(motivo: str, pedidos_free=None, transportadora=""):
         motivo,
     ]
     if pedidos_free:
-        linhas.append(f"\n🎁 FREE- ignorados: {len(pedidos_free)}")
+        linhas.append(f"\n🎁 *FREE- ignorados ({len(pedidos_free)}):*")
+        for p in pedidos_free:
+            linhas.append(f"   • `{p['docname']}`")
     _enviar_mensagem_chat("\n".join(linhas))
 
 
