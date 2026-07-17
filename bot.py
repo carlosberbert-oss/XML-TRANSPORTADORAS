@@ -321,39 +321,50 @@ def buscar_arquivos_do_pedido(page, docname: str) -> list[str]:
     TIMEOUT = 8_000
 
     try:
-        page.goto(URL_SALES_INVOICE, wait_until="domcontentloaded", timeout=20_000)
-        page.wait_for_timeout(2_000)
+        page.goto(URL_SALES_INVOICE, wait_until="domcontentloaded", timeout=15_000)
+        page.wait_for_timeout(1_500)
 
         btn_filtros = page.locator("span.button-label", has_text="filter")
         if btn_filtros.count() == 0:
             btn_filtros = page.locator(".filter-button, [data-label='Filter']")
         btn_filtros.first.click(timeout=5_000)
-        page.wait_for_timeout(800)
+        page.wait_for_timeout(600)
 
         campo = page.locator("input[data-fieldname='sales_order']")
         campo.wait_for(timeout=TIMEOUT)
         campo.fill(docname)
-        page.wait_for_timeout(400)
+        page.wait_for_timeout(300)
 
         page.locator("button.apply-filters").click(timeout=5_000)
-        page.wait_for_timeout(2_000)
+        page.wait_for_timeout(1_500)
 
+        # Se não encontrar resultado em 8s, pula imediatamente
         resultado = page.locator(".list-row-col .ellipsis a, tbody tr td a").first
-        resultado.wait_for(timeout=TIMEOUT)
-        resultado.click()
-        page.wait_for_timeout(2_000)
+        try:
+            resultado.wait_for(timeout=TIMEOUT)
+        except PlaywrightTimeout:
+            print(f"   ⚠️  Nenhum resultado encontrado para {docname} — pulando.")
+            return []
 
-        page.wait_for_selector(
-            ".attachment-row a[href*='/private/files/'][href$='.xml'], "
-            ".attachment-row a[href*='/private/files/'][href$='.pdf']",
-            timeout=TIMEOUT
-        )
+        resultado.click()
+        page.wait_for_timeout(1_500)
+
+        # Se não encontrar XML/PDF em 8s, pula imediatamente
+        try:
+            page.wait_for_selector(
+                ".attachment-row a[href*='/private/files/'][href$='.xml'], "
+                ".attachment-row a[href*='/private/files/'][href$='.pdf']",
+                timeout=TIMEOUT
+            )
+        except PlaywrightTimeout:
+            print(f"   ⚠️  Nenhum XML/PDF nos attachments para {docname} — pulando.")
+            return []
 
     except PlaywrightTimeout:
-        print(f"   ⚠️  XML/PDF não encontrado para {docname} em 8s — pulando.")
+        print(f"   ⚠️  Timeout ao buscar {docname} — pulando.")
         return []
     except Exception as e:
-        print(f"   ⚠️  Erro ao buscar {docname}: {e} — pulando.")
+        print(f"   ⚠️  Erro ao buscar {docname}: {type(e).__name__} — pulando.")
         return []
 
     links = page.locator(
@@ -371,11 +382,6 @@ def buscar_arquivos_do_pedido(page, docname: str) -> list[str]:
             print(f"   📎  {tipo}: {href.split('/')[-1]}")
 
     return urls
-
-
-# ════════════════════════════════════════════════════════════
-#  BAIXAR ARQUIVO
-# ════════════════════════════════════════════════════════════
 def baixar_arquivo(page, url: str, nome: str) -> Path | None:
     try:
         response = page.request.get(url)
@@ -1082,18 +1088,19 @@ def platinum_upload_etiqueta(page, pdf_path: Path, n_nf: str) -> bool:
     print(f"\n   🏷️  Platinum OMS — Pedido: {pedido_oms}")
 
     try:
-        page.goto(URL_PLATINUM, wait_until="domcontentloaded", timeout=20_000)
-        page.wait_for_timeout(2_000)
+        page.goto(URL_PLATINUM, wait_until="domcontentloaded", timeout=30_000)
+        page.wait_for_timeout(3_000)
 
         # Verifica se precisa logar novamente
         if "login" in page.url.lower():
             platinum_fazer_login(page)
-            page.goto(URL_PLATINUM, wait_until="domcontentloaded", timeout=20_000)
-            page.wait_for_timeout(2_000)
+            page.goto(URL_PLATINUM, wait_until="domcontentloaded", timeout=30_000)
+            page.wait_for_timeout(3_000)
 
         # Preenche o número do pedido
         campo_pedido = page.locator("input[name='pedido']")
-        campo_pedido.wait_for(timeout=8_000)
+        campo_pedido.wait_for(timeout=15_000)
+        campo_pedido.clear()
         campo_pedido.fill(pedido_oms)
         page.wait_for_timeout(500)
 
@@ -1103,20 +1110,28 @@ def platinum_upload_etiqueta(page, pdf_path: Path, n_nf: str) -> bool:
 
         # Upload do PDF via input file oculto
         page.locator("input[name='upload']").set_input_files(str(pdf_path))
-        page.wait_for_timeout(1_000)
+        page.wait_for_timeout(1_500)
 
-        # Clica em UPLOAD
-        page.locator("button[type='submit'], input[type='submit'], button:has-text('UPLOAD')").first.click()
-        page.wait_for_timeout(4_000)
+        # Clica no botão UPLOAD (input type=button com onclick=valida())
+        page.locator("input[type='button'][value='UPLOAD'], input[onclick='valida()']").first.click()
 
-        # Verifica mensagem de sucesso na página
-        texto_pagina = page.content().lower()
-        if "sucesso" in texto_pagina or "success" in texto_pagina or "carregad" in texto_pagina:
+        # Upload é instantâneo — aguarda só o popup SweetAlert2 aparecer
+        try:
+            btn_ok = page.locator(".swal2-confirm").first
+            btn_ok.wait_for(timeout=5_000)
+            btn_ok.click()
+            page.wait_for_timeout(500)
             print(f"   ✅  NF {n_nf} enviada ao Platinum OMS!")
-            return True
-        else:
+        except Exception:
+            # Popup não apareceu — tenta botão OK genérico
+            try:
+                page.locator("button:has-text('OK')").first.click()
+                page.wait_for_timeout(500)
+            except Exception:
+                pass
             print(f"   ✅  NF {n_nf} — upload enviado ao Platinum.")
-            return True
+
+        return True
 
     except PlaywrightTimeout:
         print(f"   ⚠️  Timeout no Platinum OMS para NF {n_nf}.")
