@@ -451,7 +451,7 @@ def enviar_zip_por_email(zip_path: Path, transportadora: str, pedidos: list[dict
     carrier_upper = transportadora.upper()
 
     if "FITLOG" in carrier_upper:
-        destinatarios_para = ["Adm.operacional@fitlogistica.com.br"]
+        destinatarios_para = ["Adm.operacional@fitlogistica.com.br", assistenteoperacional1@fitlogistica.com.br]
         destinatarios_cc   = ["expedicao.sp@fitlogistica.com.br", GMAIL_USUARIO, "felipe.azevedo@zeb.mx", "israel.lopes@zeb.mx"]
         assunto = f"COLETA LUUNA {data_hoje} - FITLOG"
 
