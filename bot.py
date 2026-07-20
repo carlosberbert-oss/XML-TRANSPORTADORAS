@@ -451,7 +451,7 @@ def enviar_zip_por_email(zip_path: Path, transportadora: str, pedidos: list[dict
     carrier_upper = transportadora.upper()
 
     if "FITLOG" in carrier_upper:
-        destinatarios_para = ["Adm.operacional@fitlogistica.com.br", assistenteoperacional1@fitlogistica.com.br]
+        destinatarios_para = ["Adm.operacional@fitlogistica.com.br"]
         destinatarios_cc   = ["expedicao.sp@fitlogistica.com.br", GMAIL_USUARIO, "felipe.azevedo@zeb.mx", "israel.lopes@zeb.mx"]
         assunto = f"COLETA LUUNA {data_hoje} - FITLOG"
 
@@ -1285,8 +1285,10 @@ def jamef_upload_xmls(xmls: list[Path], page=None) -> dict:
 
             status_etiqueta = jamef_verificar_status_etiqueta(chave, id_token, n_nf, page=page)
 
-            if status_etiqueta == "sucesso":
-                # Baixa etiqueta (pode já ter sido salva na verificação)
+            if status_etiqueta in ("sucesso", "ja_cadastrada"):
+                # Aguarda 5s antes de baixar para garantir que a etiqueta está pronta
+                import time
+                time.sleep(5)
                 etiqueta_path = jamef_baixar_etiqueta(chave, id_token, n_nf)
 
                 if etiqueta_path and page and platinum_logado:
@@ -1297,10 +1299,6 @@ def jamef_upload_xmls(xmls: list[Path], page=None) -> dict:
                         etiquetas_falha.append(f"NF {n_nf}")
                 elif etiqueta_path:
                     etiquetas_ok.append(f"NF {n_nf} (etiqueta salva, Platinum pulado)")
-
-            elif status_etiqueta == "ja_cadastrada":
-                print(f"   ℹ️  NF {n_nf}: etiqueta já cadastrada — pulando Platinum.")
-                etiquetas_falha.append(f"NF {n_nf} (já cadastrada)")
 
             else:  # timeout ou erro
                 print(f"   ⚠️  NF {n_nf}: etiqueta não processada a tempo.")
