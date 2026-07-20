@@ -1014,42 +1014,97 @@ def jamef_verificar_status_etiqueta(chave: str, id_token: str, n_nf: str,
     return "timeout"
 
 
-def jamef_baixar_etiqueta(chave: str, id_token: str, n_nf: str) -> Path | None:
+def jamef_baixar_etiqueta(chave: str, id_token: str, n_nf: str, page=None) -> Path | None:
     """
-    Baixa a etiqueta PDF da JAMEF para uma NF.
-    Assume que a etiqueta já foi processada (status = sucesso).
+    Baixa a etiqueta PDF da JAMEF clicando no botão de imprimir
+    e capturando a nova aba que abre com o PDF.
     """
-    caminho = PASTA_XMLS / f"etiqueta_JAMEF_NF{n_nf}.pdf"
+    import urllib.request
+    import json
+
     # Se já foi salva durante a verificação de status, retorna direto
+    caminho = PASTA_XMLS / f"etiqueta_JAMEF_NF{n_nf}.pdf"
     if caminho.exists() and caminho.stat().st_size > 100:
         print(f"   ✅  Etiqueta já disponível: {caminho.name}")
         return caminho
 
-    import urllib.request
-    import json
-
     print(f"   🏷️  Baixando etiqueta para NF {n_nf}...")
-    payload = json.dumps({"chave": chave}).encode("utf-8")
-    req = urllib.request.Request(
-        f"{JAMEF_URL_BASE}/api/label/render",
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": id_token,
-            "Cookie": f"idToken={id_token}",
-            "Origin": JAMEF_URL_BASE,
-            "Referer": f"{JAMEF_URL_BASE}/etiquetas"
-        },
-        method="POST"
-    )
+
+    # Tenta via API primeiro (request direto)
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        payload = json.dumps({"chave": chave}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{JAMEF_URL_BASE}/api/label/render",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": id_token,
+                "Cookie": f"idToken={id_token}",
+                "Origin": JAMEF_URL_BASE,
+                "Referer": f"{JAMEF_URL_BASE}/etiquetas"
+            },
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
             conteudo = resp.read()
-            caminho.write_bytes(conteudo)
-            print(f"   ✅  Etiqueta salva: {caminho.name}")
-            return caminho
+            # Verifica se é PDF válido
+            if conteudo[:4] == b"%PDF" or len(conteudo) > 5000:
+                caminho.write_bytes(conteudo)
+                print(f"   ✅  Etiqueta salva via API: {caminho.name}")
+                return caminho
     except Exception as e:
-        print(f"   ❌  Erro ao baixar etiqueta NF {n_nf}: {e}")
+        print(f"   ⚠️  API falhou ({e}), tentando via browser...")
+
+    # Fallback: usa o Playwright para clicar no botão e capturar a nova aba
+    if page is None:
+        print(f"   ❌  Sem page disponível para baixar etiqueta NF {n_nf}.")
+        return None
+
+    try:
+        # Navega para a tela de etiquetas da JAMEF
+        page.goto(f"{JAMEF_URL_BASE}/etiquetas", wait_until="networkidle", timeout=20_000)
+        page.wait_for_timeout(2_000)
+
+        # Encontra o botão de imprimir/download da NF correta
+        # O botão fica na linha que contém o número da NF
+        linhas = page.locator("table tbody tr, .MuiTableBody-root tr").all()
+        btn_imprimir = None
+
+        for linha in linhas:
+            if str(n_nf) in linha.inner_text():
+                # Botão de imprimir é o último elemento da linha (ícone de impressora)
+                btn_imprimir = linha.locator("button, a[href*='print'], svg").last
+                break
+
+        if btn_imprimir is None:
+            print(f"   ❌  Botão de imprimir não encontrado para NF {n_nf}.")
+            return None
+
+        # Captura a nova aba que abre ao clicar no botão
+        with page.context.expect_page() as nova_aba_info:
+            btn_imprimir.click()
+
+        nova_aba = nova_aba_info.value
+        nova_aba.wait_for_load_state("networkidle", timeout=15_000)
+        page.wait_for_timeout(2_000)
+
+        # Baixa o PDF da nova aba via request autenticado
+        url_pdf = nova_aba.url
+        print(f"   ℹ️  URL da etiqueta: {url_pdf[:60]}...")
+
+        response = page.request.get(url_pdf)
+        if response.ok:
+            caminho.write_bytes(response.body())
+            print(f"   ✅  Etiqueta salva via browser: {caminho.name}")
+            nova_aba.close()
+            return caminho
+        else:
+            print(f"   ❌  Erro ao baixar PDF: HTTP {response.status}")
+            nova_aba.close()
+            return None
+
+    except Exception as e:
+        print(f"   ❌  Erro ao capturar etiqueta NF {n_nf}: {e}")
         return None
 
 
@@ -1252,11 +1307,6 @@ def jamef_upload_xmls(xmls: list[Path], page=None) -> dict:
     etiquetas_ok     = []
     etiquetas_falha  = []
 
-    # Login no Platinum OMS antes de processar (se tiver page)
-    platinum_logado = False
-    if page:
-        platinum_logado = platinum_fazer_login(page)
-
     for xml_path in apenas_xmls:
         resultado = jamef_enviar_xml(xml_path, id_token)
 
@@ -1270,7 +1320,6 @@ def jamef_upload_xmls(xmls: list[Path], page=None) -> dict:
                 print(f"   ⚠️  Chave/NF não encontrada — etiqueta pulada.")
                 continue
 
-            # Aguarda processamento e verifica status
             # Injeta cookie da JAMEF no page antes de verificar status
             if page:
                 try:
@@ -1286,21 +1335,15 @@ def jamef_upload_xmls(xmls: list[Path], page=None) -> dict:
             status_etiqueta = jamef_verificar_status_etiqueta(chave, id_token, n_nf, page=page)
 
             if status_etiqueta in ("sucesso", "ja_cadastrada"):
-                # Aguarda 5s antes de baixar para garantir que a etiqueta está pronta
                 import time
                 time.sleep(5)
-                etiqueta_path = jamef_baixar_etiqueta(chave, id_token, n_nf)
-
-                if etiqueta_path and page and platinum_logado:
-                    ok_oms = platinum_upload_etiqueta(page, etiqueta_path, n_nf)
-                    if ok_oms:
-                        etiquetas_ok.append(f"NF {n_nf}")
-                    else:
-                        etiquetas_falha.append(f"NF {n_nf}")
-                elif etiqueta_path:
-                    etiquetas_ok.append(f"NF {n_nf} (etiqueta salva, Platinum pulado)")
-
-            else:  # timeout ou erro
+                etiqueta_path = jamef_baixar_etiqueta(chave, id_token, n_nf, page=page)
+                if etiqueta_path:
+                    etiquetas_ok.append(f"NF {n_nf}")
+                    print(f"   ✅  Etiqueta NF {n_nf} salva!")
+                else:
+                    etiquetas_falha.append(f"NF {n_nf}")
+            else:
                 print(f"   ⚠️  NF {n_nf}: etiqueta não processada a tempo.")
                 etiquetas_falha.append(f"NF {n_nf} (timeout/erro)")
         else:
