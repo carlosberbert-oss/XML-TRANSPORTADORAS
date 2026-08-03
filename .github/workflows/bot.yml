@@ -1,14 +1,18 @@
 name: Bot XML Transportadoras
 
 on:
-  # Disparado pelo cron-job.org nos horários configurados:
-  # JAMEF: 09:30 e 10:30 | FITLOG: 14:30 | MIRA: 15:00 (Brasília)
+  # Disparado pelo cron-job.org nos horários configurados
   workflow_dispatch:
     inputs:
       transportadora:
-        description: 'Transportadora (JAMEF | FITLOG TRANSPORTES | MIRA TRANSPORTES)'
-        required: false
-        default: ''
+        description: 'Qual transportadora rodar?'
+        required: true
+        default: 'JAMEF'
+        type: choice
+        options:
+          - JAMEF
+          - FITLOG TRANSPORTES
+          - MIRA TRANSPORTES
 
 permissions:
   contents: write
@@ -16,7 +20,7 @@ permissions:
 jobs:
   rodar-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
       - name: Checkout do repositório
@@ -42,36 +46,17 @@ jobs:
       - name: Instalar Chromium (Playwright)
         run: python -m playwright install chromium
 
-      # Detecta qual transportadora rodar baseado no horário ou input manual
-      - name: Detectar transportadora pelo horário
-        id: detectar
-        run: |
-          INPUT="${{ github.event.inputs.transportadora }}"
-          if [ -n "$INPUT" ]; then
-            echo "transportadora=$INPUT" >> $GITHUB_OUTPUT
-          else
-            HORA=$(TZ="America/Sao_Paulo" date +"%H:%M")
-            echo "Horário BRT: $HORA"
-            case "$HORA" in
-              "09:30"|"09:3"*) echo "transportadora=JAMEF" >> $GITHUB_OUTPUT ;;
-              "10:30"|"10:3"*) echo "transportadora=JAMEF" >> $GITHUB_OUTPUT ;;
-              "14:30"|"14:3"*) echo "transportadora=FITLOG TRANSPORTES" >> $GITHUB_OUTPUT ;;
-              "15:00"|"15:0"*) echo "transportadora=MIRA TRANSPORTES" >> $GITHUB_OUTPUT ;;
-              *) echo "transportadora=JAMEF" >> $GITHUB_OUTPUT ;;
-            esac
-          fi
-
       - name: Rodar o bot
         env:
           SISTEMA_EMAIL: ${{ secrets.SISTEMA_EMAIL }}
           SISTEMA_SENHA: ${{ secrets.SISTEMA_SENHA }}
-          TRANSPORTADORA: ${{ steps.detectar.outputs.transportadora }}
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          TRANSPORTADORA: ${{ github.event.inputs.transportadora }}
           GMAIL_USUARIO: ${{ secrets.GMAIL_USUARIO }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           GMAIL_OAUTH_TOKEN: ${{ secrets.GMAIL_OAUTH_TOKEN }}
           JAMEF_EMAIL: ${{ secrets.JAMEF_EMAIL }}
           JAMEF_SENHA: ${{ secrets.JAMEF_SENHA }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           CI: "true"
         run: python bot.py
 
