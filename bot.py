@@ -1,63 +1,7 @@
-
-hoje 9:36
- if "FITLOG" in carrier_upper:
-        destinatarios_para = ["Adm.operacional@fitlogistica.com.br"]
-        destinatarios_cc   = ["expedicao.sp@fitlogistica.com.br", GMAIL_USUARIO, "felipe.azevedo@zeb.mx", "israel.lopes@zeb.mx"]
-        assunto = f"COLETA LUUNA {data_hoje} - FITLOG"
-
-
-adicionar 
-	
-assistenteoperacional1@fitlogistica.com.br
-como cc
-
-Adicione o e-mail na lista de destinatarios_cc:
-
-if "FITLOG" in carrier_upper:
-    destinatarios_para = ["Adm.operacional@fitlogistica.com.br"]
-    destinatarios_cc = [
-        "expedicao.sp@fitlogistica.com.br",
-        "assistenteoperacional1@fitlogistica.com.br",
-        GMAIL_USUARIO,
-        "felipe.azevedo@zeb.mx",
-        "israel.lopes@zeb.mx"
-    ]
-    assunto = f"COLETA LUUNA {data_hoje} - FITLOG"
-Assim, assistenteoperacional1@fitlogistica.com.br ficará em CC nos e-mails da FITLOG.
-
-
-
-Texto colado(1).txt
-Documento
-
-Recebi o arquivo com o código completo. A alteração que você pediu está exatamente na função enviar_zip_por_email, no bloco da FITLOG. 
-
-
-O trecho deve ficar assim:
-
-if "FITLOG" in carrier_upper:
-    destinatarios_para = ["Adm.operacional@fitlogistica.com.br"]
-    destinatarios_cc = [
-        "expedicao.sp@fitlogistica.com.br",
-        "assistenteoperacional1@fitlogistica.com.br",
-        GMAIL_USUARIO,
-        "felipe.azevedo@zeb.mx",
-        "israel.lopes@zeb.mx"
-    ]
-    assunto = f"COLETA LUUNA {data_hoje} - FITLOG"
-Não precisa alterar nenhuma outra parte do código.
-
-
-
-
-Anúncio
-Anúncios não influenciam as respostas obtidas do ChatGPT. Seus chats continuam privados. 
-Saiba mais sobre anúncios e personalização
-
 """
 ╔══════════════════════════════════════════════════════════╗
-║ BOT XML TRANSPORTADORAS — Zebrands/Luuna ║
-║ Download XML+PDF + Upload Google Drive + Chat ║
+║         BOT XML TRANSPORTADORAS — Zebrands/Luuna        ║
+║   Download XML+PDF + Upload Google Drive + Chat         ║
 ╚══════════════════════════════════════════════════════════╝
 """
 
@@ -75,22 +19,24 @@ from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
 ── Configurações ──────────────────────────────────────────
-URL_LOGIN = "https://zecore.zebrands.mx/login#login"
-URL_REPORT = "https://zecore.zebrands.mx/app/arrangement/view/report/REPORT%203PL"
+
+URL_LOGIN         = "https://zecore.zebrands.mx/login#login"
+URL_REPORT        = "https://zecore.zebrands.mx/app/arrangement/view/report/REPORT%203PL"
 URL_SALES_INVOICE = "https://zecore.zebrands.mx/app/sales-invoice"
-BASE_URL = "https://zecore.zebrands.mx"
+BASE_URL          = "https://zecore.zebrands.mx"
 
 WEBHOOK_URL = "https://chat.googleapis.com/v1/spaces/AAQAnQfMMEY/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=ea5WZkjgL0OWVDLv2brT5uef-D26Xz_8u8YuTRwu1_Y"
 
 ── Configurações JAMEF Portal ────────────────────────────
-JAMEF_URL_BASE = "https://cliente.jamef.com.br"
-JAMEF_CGC = "42418313000104"
-JAMEF_CLIENT_ID = "75lv5or3fufjp3trhse7bh508m"
-JAMEF_USER_POOL = "us-east-1_OUb3yXu8P"
+
+JAMEF_URL_BASE    = "https://cliente.jamef.com.br"
+JAMEF_CGC         = "42418313000104"
+JAMEF_CLIENT_ID   = "75lv5or3fufjp3trhse7bh508m"
+JAMEF_USER_POOL   = "us-east-1_OUb3yXu8P"
 JAMEF_COGNITO_URL = f"https://cognito-idp.us-east-1.amazonaws.com/"
 
-PASTA_XMLS = Path("xmls_baixados")
-PASTA_LOGS = Path("logs")
+PASTA_XMLS       = Path("xmls_baixados")
+PASTA_LOGS       = Path("logs")
 ARQUIVO_HISTORICO = Path("historico_processados.json")
 
 PASTA_XMLS.mkdir(exist_ok=True)
@@ -99,11 +45,15 @@ PASTA_LOGS.mkdir(exist_ok=True)
 load_dotenv()
 
 Cache de IDs de subpastas do Drive (evita criar duplicatas)
+
 _drive_folder_cache = {}
 
 ════════════════════════════════════════════════════════════
+
 CREDENCIAIS E CONFIGURAÇÕES
+
 ════════════════════════════════════════════════════════════
+
 def obter_credenciais():
 email = os.getenv("SISTEMA_EMAIL", "").strip()
 senha = os.getenv("SISTEMA_SENHA", "").strip()
@@ -127,20 +77,24 @@ if not email or not senha:
     sys.exit(1)
 
 return email, senha
+
 def obter_transportadora() -> str:
 transportadora = os.getenv("TRANSPORTADORA", "").strip().upper()
 if not transportadora:
-print("\n 📋 Transportadoras disponíveis: JAMEF | FITLOG TRANSPORTES | MIRA TRANSPORTES")
-transportadora = input(" 🚚 Qual transportadora processar? ").strip().upper()
+print("\n   📋  Transportadoras disponíveis: JAMEF | FITLOG TRANSPORTES | MIRA TRANSPORTES")
+transportadora = input("   🚚  Qual transportadora processar? ").strip().upper()
 if not transportadora:
-print("\n❌ Nenhuma transportadora informada.")
+print("\n❌  Nenhuma transportadora informada.")
 sys.exit(1)
-print(f"\n ✅ Transportadora: {transportadora}")
+print(f"\n   ✅  Transportadora: {transportadora}")
 return transportadora
 
 ════════════════════════════════════════════════════════════
+
 HISTÓRICO — evita reprocessar pedidos
+
 ════════════════════════════════════════════════════════════
+
 def carregar_historico() -> set:
 if ARQUIVO_HISTORICO.exists():
 try:
@@ -161,35 +115,41 @@ encoding="utf-8"
 )
 
 ════════════════════════════════════════════════════════════
+
 LOGIN
+
 ════════════════════════════════════════════════════════════
+
 def fazer_login(page, email: str, senha: str) -> bool:
-print(f"\n🌐 Fazendo login...")
+print(f"\n🌐  Fazendo login...")
 page.goto(URL_LOGIN, wait_until="networkidle", timeout=45_000)
 page.locator("#login_email").fill(email)
 page.locator("#login_password").fill(senha)
 page.locator("button.btn-login").click()
 try:
 page.wait_for_url(lambda url: "login" not in url, timeout=15_000)
-print("✅ Login OK!")
+print("✅  Login OK!")
 return True
 except PlaywrightTimeout:
-print("❌ Falha no login.")
+print("❌  Falha no login.")
 capturar_screenshot(page, "erro_login")
 return False
 
 ════════════════════════════════════════════════════════════
+
 NAVEGAR + FILTRAR REPORT
+
 ════════════════════════════════════════════════════════════
+
 def navegar_para_report(page):
-print(f"\n🌐 Abrindo Report 3PL...")
+print(f"\n🌐  Abrindo Report 3PL...")
 page.goto(URL_REPORT, wait_until="networkidle", timeout=45_000)
 page.wait_for_timeout(4_000)
-print("✅ Report carregado!")
+print("✅  Report carregado!")
 capturar_screenshot(page, "debug_01_report")
 
 def filtrar_por_status(page):
-print("\n🔍 Filtrando por 'Ready To Ship'...")
+print("\n🔍  Filtrando por 'Ready To Ship'...")
 campo = page.locator("input.dt-filter[data-col-index='8']")
 try:
 campo.wait_for(timeout=15_000)
@@ -197,14 +157,14 @@ campo.click()
 campo.fill("Ready To Ship")
 campo.press("Enter")
 page.wait_for_timeout(3_500)
-print("✅ Filtro de status aplicado!")
+print("✅  Filtro de status aplicado!")
 capturar_screenshot(page, "debug_02_filtro_status")
 except PlaywrightTimeout:
-print("⚠️ Filtro de status não encontrado.")
+print("⚠️  Filtro de status não encontrado.")
 capturar_screenshot(page, "debug_02_erro_status")
 
 def filtrar_por_carrier(page, carrier: str):
-print(f"\n🔍 Filtrando por Carrier = '{carrier}'...")
+print(f"\n🔍  Filtrando por Carrier = '{carrier}'...")
 campo = page.locator("input.dt-filter[data-col-index='4']")
 try:
 campo.wait_for(timeout=15_000)
@@ -213,17 +173,20 @@ campo.fill("")
 campo.fill(carrier)
 campo.press("Enter")
 page.wait_for_timeout(3_500)
-print(f"✅ Filtro de carrier aplicado: {carrier}")
+print(f"✅  Filtro de carrier aplicado: {carrier}")
 capturar_screenshot(page, f"debug_02b_carrier")
 except PlaywrightTimeout:
-print("⚠️ Filtro de carrier não encontrado.")
+print("⚠️  Filtro de carrier não encontrado.")
 capturar_screenshot(page, "debug_02b_erro_carrier")
 
 ════════════════════════════════════════════════════════════
+
 LER TABELA — scroll progressivo (virtual scroll)
+
 ════════════════════════════════════════════════════════════
+
 def ler_pedidos(page, transportadora_alvo: str) -> list[dict]:
-print("\n📋 Lendo pedidos da tabela...")
+print("\n📋  Lendo pedidos da tabela...")
 
 try:
     page.wait_for_selector(".dt-cell", timeout=20_000)
@@ -357,11 +320,15 @@ print(f"\n   🎯  {transportadora_alvo}: {len(filtrados)} pedido(s) únicos")
 print("═" * 55)
 
 return filtrados
+
 ════════════════════════════════════════════════════════════
+
 BUSCAR XML + PDF DE CADA PEDIDO
+
 ════════════════════════════════════════════════════════════
+
 def buscar_arquivos_do_pedido(page, docname: str) -> list[str]:
-print(f"\n 🔎 Buscando XML+PDF para: {docname}")
+print(f"\n   🔎  Buscando XML+PDF para: {docname}")
 TIMEOUT = 8_000
 
 try:
@@ -426,24 +393,28 @@ for link in links:
         print(f"   📎  {tipo}: {href.split('/')[-1]}")
 
 return urls
+
 def baixar_arquivo(page, url: str, nome: str) -> Path | None:
 try:
 response = page.request.get(url)
 if response.ok:
 caminho = PASTA_XMLS / nome
 caminho.write_bytes(response.body())
-print(f" ✅ Baixado: {nome}")
+print(f"   ✅  Baixado: {nome}")
 return caminho
 else:
-print(f" ❌ Erro HTTP {response.status}: {nome}")
+print(f"   ❌  Erro HTTP {response.status}: {nome}")
 return None
 except Exception as e:
-print(f" ❌ Erro: {e}")
+print(f"   ❌  Erro: {e}")
 return None
 
 ════════════════════════════════════════════════════════════
+
 CRIAR ZIP
+
 ════════════════════════════════════════════════════════════
+
 def criar_zip(arquivos: list[Path], carrier: str) -> Path:
 carrier_limpo = carrier.strip().upper().replace(" ", "")
 data_hoje = datetime.now().strftime("%d-%m-%Y")
@@ -458,12 +429,19 @@ with zipfile.ZipFile(nome_zip, "w", zipfile.ZIP_DEFLATED) as zf:
 tamanho = nome_zip.stat().st_size / 1024
 print(f"\n📦  ZIP: {nome_zip.name} ({tamanho:.1f} KB) — {len(arquivos)} arquivo(s)")
 return nome_zip
+
 ════════════════════════════════════════════════════════════
+
 UPLOAD GOOGLE DRIVE
+
 ════════════════════════════════════════════════════════════
+
 ════════════════════════════════════════════════════════════
+
 ENVIAR ZIP POR EMAIL (Gmail / Google Workspace)
+
 ════════════════════════════════════════════════════════════
+
 def enviar_zip_por_email(zip_path: Path, transportadora: str, pedidos: list[dict],
 arquivos: list[Path], pedidos_sem_xml: list[dict] | None = None) -> bool:
 """
@@ -581,6 +559,7 @@ try:
 except Exception as e:
     print(f"   ❌  Erro ao enviar email: {e}")
     return False
+
 def _garantir_pasta_drive(service, transportadora: str) -> str:
 global _drive_folder_cache
 if transportadora in _drive_folder_cache:
@@ -610,9 +589,13 @@ else:
 
 _drive_folder_cache[transportadora] = folder_id
 return folder_id
+
 ════════════════════════════════════════════════════════════
+
 NOTIFICAÇÕES — Google Chat
+
 ════════════════════════════════════════════════════════════
+
 def _enviar_mensagem_chat(mensagem: str):
 payload = json.dumps({"text": mensagem}).encode("utf-8")
 req = urllib.request.Request(
@@ -624,16 +607,16 @@ method="POST"
 try:
 with urllib.request.urlopen(req, timeout=10) as resp:
 if resp.status == 200:
-print("✅ Notificação enviada no Chat!")
+print("✅  Notificação enviada no Chat!")
 except Exception as e:
-print(f"❌ Erro ao enviar Chat: {e}")
+print(f"❌  Erro ao enviar Chat: {e}")
 
 def enviar_notificacao(pedidos, arquivos, zip_path, drive_link=None,
 pedidos_sem_xml=None, pedidos_free=None, transportadora=""):
 agora = datetime.now().strftime("%d/%m/%Y %H:%M")
 pedidos_sem_xml = pedidos_sem_xml or []
-pedidos_free = pedidos_free or []
-pedidos_ok = [p for p in pedidos if p["docname"] not in {x["docname"] for x in pedidos_sem_xml}]
+pedidos_free    = pedidos_free or []
+pedidos_ok      = [p for p in pedidos if p["docname"] not in {x["docname"] for x in pedidos_sem_xml}]
 
 linhas = [
     f"🤖 *Bot XML Transportadoras — Zebrands/Luuna*",
@@ -665,6 +648,7 @@ if pedidos_free:
         linhas.append(f"   • `{p['docname']}`")
 
 _enviar_mensagem_chat("\n".join(linhas))
+
 def enviar_notificacao_vazia(motivo: str, pedidos_free=None, transportadora=""):
 agora = datetime.now().strftime("%d/%m/%Y %H:%M")
 linhas = [
@@ -677,7 +661,7 @@ motivo,
 if pedidos_free:
 linhas.append(f"\n🎁 FREE- ignorados ({len(pedidos_free)}):")
 for p in pedidos_free:
-linhas.append(f" • {p['docname']}")
+linhas.append(f"   • {p['docname']}")
 _enviar_mensagem_chat("\n".join(linhas))
 
 def enviar_notificacao_erro(erro: str, transportadora=""):
@@ -689,18 +673,27 @@ f"❌ Erro — {transportadora}:\n{erro}"
 )
 
 ════════════════════════════════════════════════════════════
+
 SCREENSHOT
+
 ════════════════════════════════════════════════════════════
+
 def capturar_screenshot(page, nome: str):
 caminho = PASTA_LOGS / f"{nome}.png"
 page.screenshot(path=str(caminho), full_page=True)
 
 ════════════════════════════════════════════════════════════
+
 MAIN
+
 ════════════════════════════════════════════════════════════
+
 ════════════════════════════════════════════════════════════
+
 PORTAL JAMEF — Login via AWS Cognito + Upload XMLs
+
 ════════════════════════════════════════════════════════════
+
 def gmail_ler_codigo_mfa(remetente_filtro: str = "jamef", timeout_seg: int = 120) -> str | None:
 """
 Lê o código MFA enviado pela JAMEF no Gmail.
@@ -786,6 +779,7 @@ try:
 except Exception as e:
     print(f"   ❌  Erro ao ler Gmail: {e}")
     return None
+
 def _extrair_corpo_email(payload: dict) -> str:
 """Extrai o texto do corpo do email recursivamente."""
 import base64
@@ -867,6 +861,7 @@ except urllib.error.HTTPError as e:
 except Exception as e:
     print(f"   ❌  Erro no login JAMEF: {e}")
     return None
+
 def jamef_confirmar_mfa(email: str, codigo: str, session: str | None) -> str | None:
 """Confirma o código MFA no portal JAMEF e retorna o idToken dos cookies."""
 import urllib.request
@@ -928,6 +923,7 @@ except urllib.error.HTTPError as e:
 except Exception as e:
     print(f"   ❌  confirm-mfa erro: {e}")
     return None
+
 def jamef_extrair_dados_xml(xml_path: Path) -> dict:
 """
 Extrai dados importantes do XML da NF-e:
@@ -980,6 +976,7 @@ root = tree.getroot()
 except Exception as e:
     print(f"   ⚠️  Erro ao extrair dados do XML: {e}")
     return {"chave": None, "nNF": None, "filial": "57"}
+
 def jamef_verificar_status_etiqueta(chave: str, id_token: str, n_nf: str,
 page=None,
 max_tentativas: int = 12, intervalo: int = 10) -> str:
@@ -1033,6 +1030,7 @@ for tentativa in range(max_tentativas):
 
 print(f"   ⚠️  NF {n_nf}: timeout aguardando etiqueta.")
 return "timeout"
+
 def jamef_baixar_etiqueta(chave: str, id_token: str, n_nf: str, page=None) -> Path | None:
 """
 Baixa a etiqueta PDF da JAMEF clicando no botão de imprimir
@@ -1125,10 +1123,11 @@ try:
 except Exception as e:
     print(f"   ❌  Erro ao capturar etiqueta NF {n_nf}: {e}")
     return None
+
 def platinum_fazer_login(page) -> bool:
 """Faz login no Platinum OMS."""
 URL_LOGIN_PLATINUM = "https://oms.tpl.com.br/login"
-print("\n🔐 Fazendo login no Platinum OMS...")
+print("\n🔐  Fazendo login no Platinum OMS...")
 try:
 page.goto(URL_LOGIN_PLATINUM, wait_until="domcontentloaded", timeout=20_000)
 page.wait_for_timeout(1_500)
@@ -1146,6 +1145,7 @@ page.wait_for_timeout(1_500)
 except Exception as e:
     print(f"   ❌  Erro no login Platinum: {e}")
     return False
+
 def platinum_upload_etiqueta(page, pdf_path: Path, n_nf: str) -> bool:
 """
 Faz upload da etiqueta PDF no Platinum OMS.
@@ -1153,7 +1153,7 @@ Faz upload da etiqueta PDF no Platinum OMS.
 - Modelo: PDF - PADRAO (value=0)
 """
 URL_PLATINUM = "https://oms.tpl.com.br/pedidoEtiqueta"
-pedido_oms = f"Zecore {n_nf}-1"
+pedido_oms   = f"Zecore {n_nf}-1"
 
 print(f"\n   🏷️  Platinum OMS — Pedido: {pedido_oms}")
 
@@ -1209,6 +1209,7 @@ except PlaywrightTimeout:
 except Exception as e:
     print(f"   ❌  Erro no Platinum OMS NF {n_nf}: {e}")
     return False
+
 def jamef_extrair_filial(xml_path: Path) -> str:
 """
 Extrai o código da filial do XML da NF-e.
@@ -1228,6 +1229,7 @@ root = tree.getroot()
 
 except Exception:
     return "57"
+
 def jamef_enviar_xml(xml_path: Path, id_token: str) -> dict:
 """
 Envia um XML para o portal JAMEF via API.
@@ -1284,6 +1286,7 @@ except urllib.error.HTTPError as e:
 except Exception as e:
     print(f"   ❌  {nome}: {e}")
     return {"arquivo": nome, "ok": False, "erro": str(e)}
+
 def jamef_upload_xmls(xmls: list[Path], page=None) -> dict:
 """
 Faz login no portal JAMEF, envia todos os XMLs,
@@ -1366,6 +1369,7 @@ return {
     "etiquetas_ok": etiquetas_ok,
     "etiquetas_falha": etiquetas_falha
 }
+
 def main():
 email, senha = obter_credenciais()
 transportadora = obter_transportadora()
@@ -1538,8 +1542,6 @@ with sync_playwright() as p:
         context.close()
         browser.close()
         print("\n🔒  Browser encerrado.")
+
 if name == "main":
 main()
-
-
-Fechar
