@@ -18,8 +18,6 @@ from datetime import datetime
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
-── Configurações ──────────────────────────────────────────
-
 URL_LOGIN         = "https://zecore.zebrands.mx/login#login"
 URL_REPORT        = "https://zecore.zebrands.mx/app/arrangement/view/report/REPORT%203PL"
 URL_SALES_INVOICE = "https://zecore.zebrands.mx/app/sales-invoice"
