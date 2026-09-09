@@ -36,10 +36,12 @@ jobs:
 
       - name: Instalar Chromium + dependências (Playwright)
         run: |
-          # Remove o repositório do Google Chrome, que às vezes serve um
-          # índice com hash inconsistente e derruba o apt-get update.
+          # Remove QUALQUER fonte apt que aponte pro Google Chrome —
+          # o nome e o formato do arquivo variam entre versões do runner.
           # Não usamos o Chrome (usamos o Chromium do Playwright).
-          sudo rm -f /etc/apt/sources.list.d/google-chrome.list
+          sudo rm -f /etc/apt/sources.list.d/*google*
+          sudo grep -rl "dl.google.com" /etc/apt/ 2>/dev/null | sudo xargs -r rm -f
+          sudo apt-get update
           python -m playwright install --with-deps chromium
 
       - name: Rodar o bot
