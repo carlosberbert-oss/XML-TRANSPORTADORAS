@@ -34,15 +34,25 @@ jobs:
       - name: Instalar dependências
         run: pip install -r requirements.txt
 
-      - name: Instalar Chromium + dependências (Playwright)
+      - name: Instalar dependências do sistema
         run: |
           # Remove QUALQUER fonte apt que aponte pro Google Chrome —
-          # o nome e o formato do arquivo variam entre versões do runner.
+          # o nome/formato do arquivo varia entre versões do runner.
           # Não usamos o Chrome (usamos o Chromium do Playwright).
           sudo rm -f /etc/apt/sources.list.d/*google*
           sudo grep -rl "dl.google.com" /etc/apt/ 2>/dev/null | sudo xargs -r rm -f
           sudo apt-get update
-          python -m playwright install --with-deps chromium
+          # Lista com nomes corretos pro Ubuntu 24.04 (noble / transição t64).
+          # NÃO usar "playwright install --with-deps": o Playwright 1.44
+          # ainda pede "libasound2", que não existe mais no noble.
+          sudo apt-get install -y \
+            libasound2t64 libgbm1 libnss3 libxss1 libxtst6 \
+            libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
+            libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
+            libxrandr2 libpango-1.0-0 libcairo2
+
+      - name: Instalar Chromium (Playwright)
+        run: python -m playwright install chromium
 
       - name: Rodar o bot
         env:
