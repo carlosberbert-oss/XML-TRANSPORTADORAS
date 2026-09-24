@@ -1256,6 +1256,34 @@ def _platinum_fechar_popup(page, timeout: int = 10_000) -> str:
         return ""
 
 
+def _platinum_escolher_modelo(page) -> bool:
+    """Seleciona 'PDF - PADRAO (15cm x 11cm)' no campo MODELO DA ETIQUETA."""
+    vistos = []
+    for sel in page.locator("select").all():
+        try:
+            opcoes = sel.locator("option").all_inner_texts()
+        except Exception:
+            continue
+        vistos.append(opcoes)
+        norm = lambda t: " ".join(t.replace("\xa0", " ").split()).lower()
+        alvo = next((o for o in opcoes if norm(PLATINUM_MODELO) in norm(o)), None)
+        if alvo:
+            sel.select_option(label=alvo)
+            return True
+
+    # Fallback: dropdown montado com div (não <select>) — abre pelo "SELECIONE..."
+    try:
+        bloco = page.locator("text=MODELO DA ETIQUETA").first.locator("xpath=..")
+        bloco.get_by_text("SELECIONE", exact=False).first.click(timeout=5_000)
+        page.get_by_text(PLATINUM_MODELO, exact=False).first.click(timeout=5_000)
+        return True
+    except Exception:
+        pass
+
+    print(f"   ❌  Modelo '{PLATINUM_MODELO}' não encontrado. Selects na página: {vistos}")
+    return False
+
+
 def platinum_upload_etiqueta(page, pdf_path: Path, n_nf: str) -> bool:
     """
     Sobe a etiqueta no Platinum — mesmo passo a passo do vídeo:
@@ -1282,14 +1310,11 @@ def platinum_upload_etiqueta(page, pdf_path: Path, n_nf: str) -> bool:
         campo_pedido.press("Tab")
 
         # MODELO DA ETIQUETA
-        select_modelo = page.locator("select").first
-        opcoes = select_modelo.locator("option").all_inner_texts()
-        alvo = next((o for o in opcoes if PLATINUM_MODELO.lower() in o.lower()), None)
-        if not alvo:
-            print(f"   ❌  Modelo '{PLATINUM_MODELO}' não encontrado. Opções: {opcoes}")
+        # A página tem outros <select> no topo (cliente, unidade...). Procura
+        # o <select> que tem a opção "PDF - PADRAO" em vez de pegar o primeiro.
+        if not _platinum_escolher_modelo(page):
             capturar_screenshot(page, f"platinum_modelo_NF{n_nf}")
             return False
-        select_modelo.select_option(label=alvo)
 
         # PDF
         page.locator("input[type='file']").first.set_input_files(str(pdf_path))
