@@ -17,6 +17,11 @@ on:
 permissions:
   contents: write
 
+# Uma execução por vez: se uma atrasar, a próxima espera em vez de atropelar
+concurrency:
+  group: bot-xml-transportadoras
+  cancel-in-progress: false
+
 jobs:
   rodar-bot:
     runs-on: ubuntu-latest
@@ -64,7 +69,9 @@ jobs:
           GMAIL_OAUTH_TOKEN: ${{ secrets.GMAIL_OAUTH_TOKEN }}
           JAMEF_EMAIL: ${{ secrets.JAMEF_EMAIL }}
           JAMEF_SENHA: ${{ secrets.JAMEF_SENHA }}
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          CHAT_WEBHOOK_URL: ${{ secrets.CHAT_WEBHOOK_URL }}
+          PLATINUM_EMAIL: ${{ secrets.PLATINUM_EMAIL }}
+          PLATINUM_SENHA: ${{ secrets.PLATINUM_SENHA }}
           CI: "true"
         run: python bot.py
 
@@ -76,6 +83,15 @@ jobs:
           path: logs/
           retention-days: 7
 
+      - name: Salvar etiquetas JAMEF (backup)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: etiquetas-${{ github.run_id }}
+          path: xmls_baixados/etiqueta_*.pdf
+          if-no-files-found: ignore
+          retention-days: 30
+
       - name: Commitar histórico atualizado
         if: always()
         run: |
@@ -83,4 +99,5 @@ jobs:
           git config --local user.name "Bot XML Transportadoras"
           git add historico_processados.json
           git diff --staged --quiet || git commit -m "🤖 Histórico atualizado"
+          git pull --rebase --autostash || true
           git push
