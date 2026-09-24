@@ -990,8 +990,65 @@ def _jamef_render_pdf(chave: str, id_token: str, silencioso: bool = False) -> by
 
     if conteudo[:4] == b"%PDF":
         return conteudo
+
+    pdf = _jamef_labels_json_para_pdf(conteudo)
+    if pdf:
+        return pdf
+
     if not silencioso:
-        print(f"   ℹ️  render respondeu sem PDF: {conteudo[:120]!r}")
+        print(f"   ℹ️  render respondeu sem etiqueta: {conteudo[:120]!r}")
+    return None
+
+
+def _jamef_labels_json_para_pdf(conteudo: bytes) -> bytes | None:
+    """
+    A API /api/label/render responde JSON: {"labels": [{"base64": "iVBOR..."}]}
+    Cada item é a imagem PNG de uma etiqueta (1 por volume). Junta todas num
+    PDF (uma página por etiqueta). Se vier PDF em base64, usa direto.
+    """
+    import io
+    try:
+        dados = json.loads(conteudo)
+    except Exception:
+        return None
+
+    labels = dados.get("labels") if isinstance(dados, dict) else dados
+    if not isinstance(labels, list) or not labels:
+        return None
+
+    imagens, pdfs = [], []
+    for item in labels:
+        b64 = item.get("base64") if isinstance(item, dict) else item
+        if not isinstance(b64, str) or not b64:
+            continue
+        if "," in b64[:40]:                 # "data:image/png;base64,...."
+            b64 = b64.split(",", 1)[1]
+        try:
+            bruto = base64.b64decode(b64)
+        except Exception:
+            continue
+        if bruto[:4] == b"%PDF":
+            pdfs.append(bruto)
+            continue
+        try:
+            from PIL import Image
+            img = Image.open(io.BytesIO(bruto))
+            img.load()
+            imagens.append(img)
+        except Exception as e:
+            print(f"   ⚠️  Etiqueta em formato não reconhecido: {e}")
+
+    if imagens:
+        paginas = [im.convert("RGB") for im in imagens]
+        dpi = imagens[0].info.get("dpi", (203, 203))[0] or 203
+        buf = io.BytesIO()
+        paginas[0].save(buf, "PDF", save_all=True,
+                        append_images=paginas[1:], resolution=float(dpi))
+        return buf.getvalue()
+    if pdfs:
+        if len(pdfs) > 1:
+            print(f"   ⚠️  {len(pdfs)} PDFs de etiqueta recebidos — usando o primeiro.")
+        return pdfs[0]
     return None
 
 
@@ -1145,98 +1202,161 @@ def jamef_baixar_etiqueta(chave: str, id_token: str, n_nf: str, page=None) -> Pa
         return None
 
 
+PLATINUM_URL_BASE   = "https://oms.tpl.com.br"
+PLATINUM_URL_UPLOAD = f"{PLATINUM_URL_BASE}/pedidoEtiqueta"
+PLATINUM_MODELO     = "PDF - PADRAO"        # "PDF - PADRAO (15cm x 11cm)"
+
+
 def platinum_fazer_login(page) -> bool:
-    """Faz login no Platinum OMS."""
-    URL_LOGIN_PLATINUM = "https://oms.tpl.com.br/login"
-    PLATINUM_EMAIL = os.getenv("PLATINUM_EMAIL", "").strip()
-    PLATINUM_SENHA = os.getenv("PLATINUM_SENHA", "").strip()
-    if not PLATINUM_EMAIL or not PLATINUM_SENHA:
+    """Login no Platinum/TPL OMS (tela com E-mail, Senha e botão Entrar)."""
+    email = os.getenv("PLATINUM_EMAIL", "").strip()
+    senha = os.getenv("PLATINUM_SENHA", "").strip()
+    if not email or not senha:
         print("   ⚠️  PLATINUM_EMAIL/PLATINUM_SENHA não configurados — pulando Platinum.")
         return False
+
     print("\n🔐  Fazendo login no Platinum OMS...")
     try:
-        page.goto(URL_LOGIN_PLATINUM, wait_until="domcontentloaded", timeout=20_000)
-        page.wait_for_timeout(1_500)
+        page.goto(PLATINUM_URL_BASE, wait_until="domcontentloaded", timeout=30_000)
+        campo_senha = page.locator("input[type='password']").first
+        campo_senha.wait_for(timeout=15_000)
 
-        page.locator("input#email, input[name='email']").fill(PLATINUM_EMAIL)
-        page.locator("input#password, input[name='senha']").fill(PLATINUM_SENHA)
-        page.locator("button[type='submit'], input[type='submit']").first.click()
-        page.wait_for_timeout(3_000)
+        page.locator("input[type='email'], input[name*='mail' i], input[id*='mail' i]").first.fill(email)
+        campo_senha.fill(senha)
 
-        if "login" not in page.url.lower():
-            print("   ✅  Login Platinum OK!")
-            return True
-        print("   ❌  Falha no login Platinum.")
-        return False
+        botao = page.get_by_role("button", name="Entrar")
+        if botao.count():
+            botao.first.click()
+        else:
+            page.locator("button[type='submit'], input[type='submit']").first.click()
+
+        # Depois do login cai em /home
+        page.wait_for_url(lambda u: "login" not in u.lower() and u.rstrip("/") != PLATINUM_URL_BASE,
+                          timeout=20_000)
+        print(f"   ✅  Login Platinum OK ({page.url})")
+        return True
     except Exception as e:
-        print(f"   ❌  Erro no login Platinum: {e}")
+        print(f"   ❌  Falha no login Platinum: {str(e).splitlines()[0]}")
+        capturar_screenshot(page, "platinum_erro_login")
         return False
+
+
+def _platinum_fechar_popup(page, timeout: int = 10_000) -> str:
+    """Espera o popup (SweetAlert, ex.: 'Fique ligado !'), lê o texto e clica OK."""
+    try:
+        popup = page.locator(".swal2-popup, .swal-modal, [role='dialog']").first
+        popup.wait_for(state="visible", timeout=timeout)
+        texto = " ".join(popup.inner_text().split())
+        botao_ok = popup.locator(".swal2-confirm, .swal-button, button:has-text('OK')").first
+        if botao_ok.count():
+            botao_ok.click()
+        page.wait_for_timeout(500)
+        return texto
+    except Exception:
+        return ""
 
 
 def platinum_upload_etiqueta(page, pdf_path: Path, n_nf: str) -> bool:
     """
-    Faz upload da etiqueta PDF no Platinum OMS.
-    - Pedido: "Zecore {n_nf}-1"
-    - Modelo: PDF - PADRAO (value=0)
+    Sobe a etiqueta no Platinum — mesmo passo a passo do vídeo:
+      Saídas > Pedidos > Carregar etiquetas (/pedidoEtiqueta)
+      PEDIDO: "Zecore {NF}-1" | MODELO: PDF - PADRAO (15cm x 11cm) | PDF | UPLOAD
     """
-    URL_PLATINUM = "https://oms.tpl.com.br/pedidoEtiqueta"
-    pedido_oms   = f"Zecore {n_nf}-1"
-
-    print(f"\n   🏷️  Platinum OMS — Pedido: {pedido_oms}")
+    pedido_oms = f"Zecore {n_nf}-1"
+    print(f"   🏷️  Platinum — {pedido_oms}")
 
     try:
-        page.goto(URL_PLATINUM, wait_until="domcontentloaded", timeout=30_000)
-        page.wait_for_timeout(3_000)
-
-        # Verifica se precisa logar novamente
-        if "login" in page.url.lower():
+        page.goto(PLATINUM_URL_UPLOAD, wait_until="domcontentloaded", timeout=30_000)
+        if "login" in page.url.lower() or page.locator("input[type='password']").count():
             if not platinum_fazer_login(page):
                 return False
-            page.goto(URL_PLATINUM, wait_until="domcontentloaded", timeout=30_000)
-            page.wait_for_timeout(3_000)
+            page.goto(PLATINUM_URL_UPLOAD, wait_until="domcontentloaded", timeout=30_000)
 
-        # Preenche o número do pedido
-        campo_pedido = page.locator("input[name='pedido']")
+        # PEDIDO
+        campo_pedido = page.locator(
+            "input[placeholder*='pedido' i], input[name='pedido'], input[id*='pedido' i]"
+        ).first
         campo_pedido.wait_for(timeout=15_000)
-        campo_pedido.clear()
+        campo_pedido.fill("")
         campo_pedido.fill(pedido_oms)
-        page.wait_for_timeout(500)
+        campo_pedido.press("Tab")
 
-        # Seleciona modelo PDF - PADRAO (value=0)
-        page.locator("select[name='modelo']").select_option("0")
-        page.wait_for_timeout(500)
+        # MODELO DA ETIQUETA
+        select_modelo = page.locator("select").first
+        opcoes = select_modelo.locator("option").all_inner_texts()
+        alvo = next((o for o in opcoes if PLATINUM_MODELO.lower() in o.lower()), None)
+        if not alvo:
+            print(f"   ❌  Modelo '{PLATINUM_MODELO}' não encontrado. Opções: {opcoes}")
+            capturar_screenshot(page, f"platinum_modelo_NF{n_nf}")
+            return False
+        select_modelo.select_option(label=alvo)
 
-        # Upload do PDF via input file oculto
-        page.locator("input[name='upload']").set_input_files(str(pdf_path))
-        page.wait_for_timeout(1_500)
+        # PDF
+        page.locator("input[type='file']").first.set_input_files(str(pdf_path))
+        page.wait_for_timeout(800)
 
-        # Clica no botão UPLOAD (input type=button com onclick=valida())
-        page.locator("input[type='button'][value='UPLOAD'], input[onclick='valida()']").first.click()
+        # UPLOAD
+        botao = page.get_by_role("button", name="UPLOAD", exact=True)
+        if botao.count():
+            botao.first.click()
+        else:
+            page.locator("input[value='UPLOAD' i], button:has-text('UPLOAD')").first.click()
 
-        # Upload é instantâneo — aguarda só o popup SweetAlert2 aparecer
-        try:
-            btn_ok = page.locator(".swal2-confirm").first
-            btn_ok.wait_for(timeout=5_000)
-            btn_ok.click()
-            page.wait_for_timeout(500)
-            print(f"   ✅  NF {n_nf} enviada ao Platinum OMS!")
-        except Exception:
-            # Popup não apareceu — tenta botão OK genérico
-            try:
-                page.locator("button:has-text('OK')").first.click()
-                page.wait_for_timeout(500)
-            except Exception:
-                pass
-            print(f"   ✅  NF {n_nf} — upload enviado ao Platinum.")
+        texto = _platinum_fechar_popup(page, timeout=20_000)
+        if texto:
+            print(f"   ℹ️  Platinum respondeu: {texto[:150]}")
 
+        baixo = texto.lower()
+        sucesso = "fique ligado" in baixo      # popup padrão de sucesso do Platinum
+        erro = not sucesso and any(p in baixo for p in ("erro", "não encontrado", "nao encontrado",
+                                                          "inválid", "invalid", "falha"))
+        if not texto:
+            print(f"   ⚠️  NF {n_nf}: nenhum popup apareceu após o UPLOAD — conferir no Platinum.")
+            capturar_screenshot(page, f"platinum_sem_popup_NF{n_nf}")
+            return False
+        if erro:
+            print(f"   ❌  NF {n_nf}: Platinum recusou a etiqueta.")
+            capturar_screenshot(page, f"platinum_recusou_NF{n_nf}")
+            return False
+
+        print(f"   ✅  NF {n_nf}: etiqueta enviada ao Platinum.")
         return True
 
-    except PlaywrightTimeout:
-        print(f"   ⚠️  Timeout no Platinum OMS para NF {n_nf}.")
-        return False
     except Exception as e:
-        print(f"   ❌  Erro no Platinum OMS NF {n_nf}: {e}")
+        print(f"   ❌  Erro no Platinum NF {n_nf}: {str(e).splitlines()[0]}")
+        capturar_screenshot(page, f"platinum_erro_NF{n_nf}")
         return False
+
+
+def platinum_subir_etiquetas(context, nfs: list[str]) -> dict:
+    """FASE 3 — sobe no Platinum as etiquetas JAMEF já baixadas."""
+    ok, falha = [], []
+    if not nfs:
+        return {"ok": ok, "falha": falha}
+
+    print(f"\n📦  FASE 3 — Subindo {len(nfs)} etiqueta(s) no Platinum OMS...")
+    pagina = context.new_page()
+    try:
+        if not platinum_fazer_login(pagina):
+            return {"ok": ok, "falha": [f"NF {n}" for n in nfs], "pulado": True}
+        for i, n_nf in enumerate(nfs, 1):
+            print(f"   [{i}/{len(nfs)}]", end="")
+            pdf = PASTA_XMLS / f"etiqueta_JAMEF_NF{n_nf}.pdf"
+            if not pdf.exists():
+                print(f"   ⚠️  NF {n_nf}: arquivo da etiqueta não encontrado.")
+                falha.append(f"NF {n_nf}")
+            elif platinum_upload_etiqueta(pagina, pdf, n_nf):
+                ok.append(f"NF {n_nf}")
+            else:
+                falha.append(f"NF {n_nf}")
+    finally:
+        try:
+            pagina.close()
+        except Exception:
+            pass
+
+    print(f"   📊  Platinum: {len(ok)} OK, {len(falha)} falha(s)")
+    return {"ok": ok, "falha": falha}
 
 
 def jamef_extrair_filial(xml_path: Path) -> str:
@@ -1319,8 +1439,8 @@ def jamef_enviar_xml(xml_path: Path, id_token: str) -> dict:
 
 
 def jamef_upload_xmls(xmls: list[Path], page=None,
-                      espera_inicial: int = 20, intervalo: int = 20,
-                      max_rodadas: int = 15) -> dict:
+                      espera_inicial: int = 60, intervalo: int = 30,
+                      max_rodadas: int = 6) -> dict:
     """
     Fluxo JAMEF em duas fases (antes era uma NF por vez, esperando a etiqueta
     de cada uma antes de mandar a próxima — com muitas notas estourava o
@@ -1388,16 +1508,16 @@ def jamef_upload_xmls(xmls: list[Path], page=None,
     etiquetas_ok = []
     total = len(pendentes)
     if pendentes:
-        print(f"\n🏷️  FASE 2 — Aguardando {total} etiqueta(s) (até ~{(espera_inicial + intervalo * max_rodadas)//60} min)...")
+        print(f"\n🏷️  FASE 2 — Aguardando {espera_inicial}s para a JAMEF liberar as {total} etiqueta(s)...")
         time.sleep(espera_inicial)
 
-    status_tela = {}        # n_nf -> último texto visto na tabela
     for rodada in range(1, max_rodadas + 1):
         if not pendentes:
             break
         print(f"   🔁  Rodada {rodada}/{max_rodadas} — faltam {len(pendentes)}/{total}")
 
-        # a) API: tenta o PDF de cada NF pendente
+        # Pede a etiqueta de cada NF pendente direto na API da JAMEF
+        # (vem como imagem PNG dentro de um JSON; vira PDF aqui)
         for n_nf, chave in list(pendentes.items()):
             pdf = _jamef_render_pdf(chave, id_token, silencioso=True)
             if pdf:
@@ -1407,49 +1527,22 @@ def jamef_upload_xmls(xmls: list[Path], page=None,
                 del pendentes[n_nf]
                 print(f"   ✅  NF {n_nf}: etiqueta salva")
 
-        # b) Tela /etiquetas: UMA leitura por rodada para todas as pendentes
-        if pendentes and page is not None:
-            try:
-                page.context.add_cookies([{
-                    "name": "idToken", "value": id_token,
-                    "domain": "cliente.jamef.com.br", "path": "/",
-                }])
-                page.goto(f"{JAMEF_URL_BASE}/etiquetas",
-                          wait_until="domcontentloaded", timeout=30_000)
-                seletor = "table tbody tr, .MuiTableBody-root tr"
-                page.locator(seletor).first.wait_for(timeout=15_000)
-                textos = [l.inner_text().replace("\n", " ").strip()
-                          for l in page.locator(seletor).all()]
-            except Exception as e:
-                print(f"   ℹ️  Tela /etiquetas indisponível nesta rodada: {str(e).splitlines()[0][:80]}")
-                textos = []
-
-            for n_nf, chave in list(pendentes.items()):
-                variantes = {n_nf, chave}
-                if n_nf.isdigit():
-                    variantes.add(f"{int(n_nf):,}".replace(",", "."))
-                linha = next((t for t in textos if any(v in t for v in variantes)), None)
-                if not linha:
-                    continue
-                status_tela[n_nf] = linha[:90]
-                baixo = linha.lower()
-                if "sucesso" in baixo or "cadastrada" in baixo:
-                    caminho = jamef_baixar_etiqueta(chave, id_token, n_nf, page=page)
-                    if caminho:
-                        etiquetas_ok.append(f"NF {n_nf}")
-                        del pendentes[n_nf]
-
         if pendentes and rodada < max_rodadas:
             time.sleep(intervalo)
 
     etiquetas_falha = []
     for n_nf in pendentes:
-        motivo = status_tela.get(n_nf, "não apareceu pronta a tempo")
         etiquetas_falha.append(f"NF {n_nf}")
-        print(f"   ⚠️  NF {n_nf}: sem etiqueta — {motivo}")
+        print(f"   ⚠️  NF {n_nf}: etiqueta não liberada após {max_rodadas} tentativas")
+        # mostra a última resposta da API para diagnóstico
+        _jamef_render_pdf(pendentes[n_nf], id_token, silencioso=False)
 
-    if pendentes and page is not None:
-        capturar_screenshot(page, "jamef_etiquetas_pendentes")
+    # ══════════════ FASE 3 — Platinum ══════════════
+    nfs_com_etiqueta = [e.replace("NF ", "") for e in etiquetas_ok]
+    if page is not None and nfs_com_etiqueta:
+        plat = platinum_subir_etiquetas(page.context, nfs_com_etiqueta)
+    else:
+        plat = {"ok": [], "falha": []}
 
     print(f"\n   📊  JAMEF Portal: {len(resultados_ok)} XML(s) enviado(s), {len(resultados_falha)} falha(s)")
     print(f"   🏷️  Etiquetas: {len(etiquetas_ok)} OK, {len(etiquetas_falha)} pendente(s)")
@@ -1458,6 +1551,9 @@ def jamef_upload_xmls(xmls: list[Path], page=None,
         "falha": resultados_falha,
         "etiquetas_ok": etiquetas_ok,
         "etiquetas_falha": etiquetas_falha,
+        "platinum_ok": plat.get("ok", []),
+        "platinum_falha": plat.get("falha", []),
+        "platinum_pulado": plat.get("pulado", False),
     }
 
 
@@ -1581,7 +1677,7 @@ def main():
                 todos_arquivos, pedidos_sem_xml=pedidos_sem_xml
             )
 
-            # 8. Se for JAMEF: envia todos os XMLs ao portal, depois busca as etiquetas
+            # 8. Se for JAMEF: envia todos os XMLs, busca as etiquetas e sobe no Platinum
             jamef_resultado = None
             if "JAMEF" in transportadora.upper():
                 jamef_resultado = jamef_upload_xmls(todos_arquivos, page=page)
@@ -1598,6 +1694,15 @@ def main():
                 resumo_jamef += f"\n🏷️ *Etiquetas:* {len(etiquetas_ok)} OK, {len(etiquetas_falha)} pendente(s)"
                 if etiquetas_falha:
                     resumo_jamef += f"\n   ⚠️ " + " | ".join(etiquetas_falha[:15])
+
+                plat_ok    = jamef_resultado.get("platinum_ok", [])
+                plat_falha = jamef_resultado.get("platinum_falha", [])
+                if jamef_resultado.get("platinum_pulado"):
+                    resumo_jamef += "\n📦 *Platinum:* não executado (login/credenciais)"
+                elif plat_ok or plat_falha:
+                    resumo_jamef += f"\n📦 *Platinum:* {len(plat_ok)} OK, {len(plat_falha)} falha(s)"
+                    if plat_falha:
+                        resumo_jamef += f"\n   ⚠️ " + " | ".join(plat_falha[:15])
 
                 drive_link = (drive_link or "") + resumo_jamef
 
