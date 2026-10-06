@@ -775,79 +775,182 @@ def _extrair_corpo_email(payload: dict) -> str:
     return corpo
 
 
-def jamef_login(email: str, senha: str) -> str | None:
+def jamef_login(email: str, senha: str, page=None) -> str | None:
     """
-    Faz login no portal JAMEF via API própria.
-    1. POST /api/auth/login → retorna session + challengeName EMAIL_MFA
-    2. Bot lê o código do Gmail
-    3. POST /api/auth/confirm-mfa → retorna o token
+    Faz login no portal JAMEF usando o Playwright (browser real).
+    Evita bloqueio 403 por WAF/Cloudflare.
+    1. Navega para /login via browser
+    2. Preenche email e senha
+    3. Aguarda código MFA no Gmail
+    4. Preenche o código MFA
+    5. Captura o idToken dos cookies
     """
-    import urllib.request
     import json
+    import time
 
-    print("\n🔐  Fazendo login no portal JAMEF...")
+    print("\n🔐  Fazendo login no portal JAMEF via browser...")
 
-    # Passo 1: Login inicial
-    payload = json.dumps({
-        "email": email,
-        "password": senha
-    }).encode("utf-8")
-
-    req = urllib.request.Request(
-        f"{JAMEF_URL_BASE}/api/auth/login",
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Origin": JAMEF_URL_BASE,
-            "Referer": f"{JAMEF_URL_BASE}/login",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
-            "sec-ch-ua": '"Chromium";v="125", "Not.A/Brand";v="24"',
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": '"Windows"',
-            "sec-fetch-dest": "empty",
-            "sec-fetch-mode": "cors",
-            "sec-fetch-site": "same-origin",
-        },
-        method="POST"
-    )
+    if page is None:
+        print("   ❌  Page não disponível para login JAMEF.")
+        return None
 
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+        # Navega para a página de login
+        page.goto(f"{JAMEF_URL_BASE}/login", wait_until="networkidle", timeout=20_000)
+        page.wait_for_timeout(2_000)
 
-        challenge = data.get("challengeName")
-        session   = data.get("session")
+        # Preenche email
+        campo_email = page.locator("input[type='email'], input[name='email'], input[placeholder*='mail']").first
+        campo_email.wait_for(timeout=8_000)
+        campo_email.fill(email)
+        page.wait_for_timeout(500)
 
-        print(f"   ℹ️  Challenge: {challenge}")
-        print(f"   ℹ️  Mensagem: {data.get('message', '')}")
+        # Preenche senha
+        campo_senha = page.locator("input[type='password'], input[name='password'], input[name='senha']").first
+        campo_senha.fill(senha)
+        page.wait_for_timeout(500)
 
-        if challenge == "EMAIL_MFA" and session:
-            # Passo 2: Lê código MFA do Gmail
-            codigo = gmail_ler_codigo_mfa()
-            if not codigo:
-                print("   ❌  Código MFA não encontrado no Gmail.")
-                return None
+        # Marca os IDs de emails MFA já existentes antes de clicar em login
+        ids_vistos = set()
+        try:
+            from google.oauth2.credentials import Credentials
+            from googleapiclient.discovery import build
+            import base64 as b64
+            oauth_raw = os.getenv("GMAIL_OAUTH_TOKEN", "")
+            if oauth_raw:
+                oauth_data = json.loads(b64.b64decode(oauth_raw).decode("utf-8"))
+                creds = Credentials(
+                    token=None,
+                    refresh_token=oauth_data["refresh_token"],
+                    token_uri=oauth_data["token_uri"],
+                    client_id=oauth_data["client_id"],
+                    client_secret=oauth_data["client_secret"],
+                    scopes=["https://www.googleapis.com/auth/gmail.readonly"]
+                )
+                svc = build("gmail", "v1", credentials=creds)
+                res = svc.users().messages().list(
+                    userId="me",
+                    q='from:naoresponda@jamef.com.br subject:"Portal Cliente Jamef"',
+                    maxResults=10
+                ).execute()
+                for msg in res.get("messages", []):
+                    ids_vistos.add(msg["id"])
+                print(f"   ℹ️  {len(ids_vistos)} email(s) antigo(s) marcado(s).")
+        except Exception:
+            pass
 
-            # Passo 3: Confirma MFA
-            return jamef_confirmar_mfa(email, codigo, session)
+        # Clica no botão de login
+        page.locator("button[type='submit'], input[type='submit'], button:has-text('Entrar'), button:has-text('Login')").first.click()
+        page.wait_for_timeout(2_000)
 
-        # Se por algum motivo retornou token direto
-        token = data.get("idToken") or data.get("token") or data.get("accessToken")
-        if token:
-            print("   ✅  Login JAMEF OK (sem MFA)!")
-            return token
+        # Verifica se apareceu campo de MFA
+        campo_mfa = page.locator("input[placeholder*='código'], input[placeholder*='MFA'], input[placeholder*='verificação'], input[maxlength='6']").first
+        try:
+            campo_mfa.wait_for(timeout=8_000)
+            print("   🔐  Campo MFA detectado na tela!")
+        except:
+            # Pode não ter campo MFA na tela — tenta ler o Gmail de qualquer forma
+            print("   ℹ️  Campo MFA não detectado na tela, aguardando email...")
 
-        print(f"   ❌  Resposta inesperada: {str(data)[:200]}")
+        # Lê o código MFA do Gmail
+        codigo = gmail_ler_codigo_mfa_com_vistos(ids_vistos)
+        if not codigo:
+            print("   ❌  Código MFA não encontrado no Gmail.")
+            return None
+
+        # Preenche o código MFA se o campo existir na tela
+        try:
+            if campo_mfa.is_visible():
+                campo_mfa.fill(codigo)
+                page.wait_for_timeout(500)
+                page.locator("button[type='submit'], input[type='submit'], button:has-text('Verificar'), button:has-text('Confirmar')").first.click()
+                page.wait_for_timeout(3_000)
+        except Exception:
+            pass
+
+        # Aguarda navegação para a página principal
+        try:
+            page.wait_for_url(lambda url: "login" not in url.lower(), timeout=10_000)
+        except Exception:
+            pass
+
+        page.wait_for_timeout(2_000)
+
+        # Captura o idToken dos cookies
+        cookies = page.context.cookies()
+        for cookie in cookies:
+            if cookie["name"] == "idToken":
+                print("   ✅  Login JAMEF OK! idToken capturado.")
+                return cookie["value"]
+            if cookie["name"] == "accessToken":
+                print("   ✅  Login JAMEF OK! accessToken capturado.")
+                return cookie["value"]
+
+        print(f"   ⚠️  Login aparentemente OK mas token não encontrado nos cookies.")
+        print(f"   ℹ️  URL atual: {page.url}")
         return None
 
-    except urllib.error.HTTPError as e:
-        erro = e.read().decode("utf-8") if e.fp else str(e)
-        print(f"   ❌  Erro HTTP {e.code}: {erro[:200]}")
+    except Exception as e:
+        print(f"   ❌  Erro no login JAMEF via browser: {e}")
+        return None
+
+
+def gmail_ler_codigo_mfa_com_vistos(ids_vistos: set, timeout_seg: int = 120) -> str | None:
+    """Lê o código MFA do Gmail ignorando emails já vistos."""
+    import json
+    import base64 as b64
+    import time
+    import re
+
+    try:
+        from google.oauth2.credentials import Credentials
+        from googleapiclient.discovery import build
+    except ImportError:
+        return None
+
+    oauth_raw = os.getenv("GMAIL_OAUTH_TOKEN", "")
+    if not oauth_raw:
+        return None
+
+    try:
+        oauth_data = json.loads(b64.b64decode(oauth_raw).decode("utf-8"))
+        creds = Credentials(
+            token=None,
+            refresh_token=oauth_data["refresh_token"],
+            token_uri=oauth_data["token_uri"],
+            client_id=oauth_data["client_id"],
+            client_secret=oauth_data["client_secret"],
+            scopes=["https://www.googleapis.com/auth/gmail.readonly"]
+        )
+        service = build("gmail", "v1", credentials=creds)
+
+        inicio = time.time()
+        while time.time() - inicio < timeout_seg:
+            resultado = service.users().messages().list(
+                userId="me",
+                q='from:naoresponda@jamef.com.br subject:"Portal Cliente Jamef"',
+                maxResults=5
+            ).execute()
+
+            for msg in resultado.get("messages", []):
+                if msg["id"] in ids_vistos:
+                    continue
+
+                msg_data = service.users().messages().get(
+                    userId="me", id=msg["id"], format="full"
+                ).execute()
+                corpo = _extrair_corpo_email(msg_data.get("payload", {}))
+                codigos = re.findall(r"\b(\d{6})\b", corpo)
+                if codigos:
+                    print(f"   ✅  Código MFA encontrado: {codigos[0]}")
+                    return codigos[0]
+
+            print(f"   ⏳  Aguardando email MFA... ({int(time.time()-inicio)}s)")
+            time.sleep(5)
+
         return None
     except Exception as e:
-        print(f"   ❌  Erro no login JAMEF: {e}")
+        print(f"   ❌  Erro ao ler Gmail: {e}")
         return None
 
 
@@ -879,13 +982,7 @@ def jamef_confirmar_mfa(email: str, codigo: str, session: str | None) -> str | N
         headers={
             "Content-Type": "application/json",
             "Origin": JAMEF_URL_BASE,
-            "Referer": f"{JAMEF_URL_BASE}/login",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
-            "sec-fetch-dest": "empty",
-            "sec-fetch-mode": "cors",
-            "sec-fetch-site": "same-origin",
+            "Referer": f"{JAMEF_URL_BASE}/login"
         },
         method="POST"
     )
@@ -1312,7 +1409,7 @@ def jamef_upload_xmls(xmls: list[Path], page=None) -> dict:
     print(f"\n📤  Enviando {len(apenas_xmls)} XML(s) para o portal JAMEF...")
 
     # Login
-    id_token = jamef_login(email, senha)
+    id_token = jamef_login(email, senha, page=page)
     if not id_token:
         return {"ok": [], "falha": [f.name for f in apenas_xmls]}
 
