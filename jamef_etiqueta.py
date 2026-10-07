@@ -1,10 +1,10 @@
 """
-jamef_etiqueta.py - etiquetas JAMEF pela API do Portal Developers (sem portal, sem MFA)
+jamef_etiqueta.py - JAMEF pela API do Portal Developers (sem portal, sem MFA)
 
 Teste rapido:
-    python jamef_etiqueta.py <chave44> [<chave44> ...]
-    python jamef_etiqueta.py nota.xml
-    python jamef_etiqueta.py --dados <chave44>     (mostra o JSON "DADOS" da etiqueta)
+    python jamef_etiqueta.py <chave44 ou nota.xml> [...]     busca a etiqueta (NF ja cadastrada)
+    python jamef_etiqueta.py --enviar nota.xml [...]         cadastra a NF e depois busca a etiqueta
+    python jamef_etiqueta.py --dados <chave44 ou nota.xml>   mostra o JSON "DADOS" da etiqueta
 
 Variaveis (.env ou GitHub Secrets): JAMEF_API_USUARIO, JAMEF_API_SENHA
 Mesmo login da API de rastreamento (auth/v1/login), NAO o do cliente.jamef.com.br.
@@ -27,8 +27,9 @@ except ImportError:
     pass
 
 API_BASE = os.getenv("JAMEF_API_BASE", "https://api.jamef.com.br")
-# Caminho confirmado no Swagger (API "Etiqueta de transporte")
 ETIQUETA_PATH = os.getenv("JAMEF_ETIQUETA_PATH", "/operacao/v1/etiqueta")
+NF_PATH = os.getenv("JAMEF_NF_PATH", "/documentos/v1/nota-fiscal")
+FILIAL_JAMEF = os.getenv("JAMEF_FILIAL", "57")  # mesma filialOrigem que o portal usava
 PASTA_SAIDA = Path(os.getenv("JAMEF_ETIQUETAS_DIR", "etiquetas_jamef"))
 DPMM = 8  # 203 dpi, padrao das Zebra
 NS = {"nfe": "http://www.portalfiscal.inf.br/nfe"}
@@ -37,6 +38,13 @@ NS = {"nfe": "http://www.portalfiscal.inf.br/nfe"}
 def _checa_bloqueio(r):
     if r.status_code == 403 and "Access Denied" in r.text:
         raise RuntimeError("JAMEF bloqueou a requisicao (403 Access Denied / WAF)")
+
+
+def _json(r):
+    try:
+        return r.json()
+    except ValueError:
+        return None
 
 
 class JamefAPI:
@@ -56,26 +64,35 @@ class JamefAPI:
         self.token = r.json()["dado"][0]["accessToken"]
         self.s.headers["Authorization"] = f"Bearer {self.token}"
 
-    def _get(self, url, params):
+    def _req(self, metodo, url, **kw):
         if not self.token:
             self.login()
-        r = self.s.get(url, params=params, timeout=self.timeout)
+        r = self.s.request(metodo, url, timeout=self.timeout, **kw)
         if r.status_code == 401:  # token expirado: reloga uma vez
             self.login()
-            r = self.s.get(url, params=params, timeout=self.timeout)
+            r = self.s.request(metodo, url, timeout=self.timeout, **kw)
         _checa_bloqueio(r)
         return r
 
+    def enviar_nf(self, caminho_xml):
+        """Cadastra a NF na JAMEF mandando o XML em base64. Retorna (ok, resposta)."""
+        xml_b64 = base64.b64encode(Path(caminho_xml).read_bytes()).decode("ascii")
+        r = self._req("POST", f"{API_BASE}{NF_PATH}",
+                      json={"codigoFilialJamef": FILIAL_JAMEF, "xmlBase64": xml_b64})
+        j = _json(r)
+        if j is None:
+            return False, f"HTTP {r.status_code}: {r.text[:300]}"
+        return r.ok and str(j.get("situacao", r.status_code)).startswith("2"), j
+
     def etiqueta(self, chave, tipo="ZPL"):
         """tipo 'ZPL' ou 'DADOS'. Retorna (True, dado[0]) ou (False, mensagem de erro)."""
-        r = self._get(f"{API_BASE}{ETIQUETA_PATH}/{chave}", {"tipoRetorno": tipo})
-        try:
-            j = r.json()
-        except ValueError:
+        r = self._req("GET", f"{API_BASE}{ETIQUETA_PATH}/{chave}", params={"tipoRetorno": tipo})
+        j = _json(r)
+        if j is None:
             return False, f"HTTP {r.status_code}: {r.text[:200]}"
         if r.ok and str(j.get("situacao")) == "200" and j.get("dado"):
             return True, j["dado"][0]
-        return False, f"HTTP {r.status_code} / situacao {j.get('situacao')}: {j.get('mensagem')}"
+        return False, f"HTTP {r.status_code}: {json.dumps(j, ensure_ascii=False)[:800]}"
 
 
 def chave_do_xml(caminho):
@@ -118,8 +135,9 @@ def zpl_para_pdf(zpls, destino):
     Path(destino).write_bytes(r.content)
 
 
-def gerar_etiquetas(itens, api=None, pasta=PASTA_SAIDA):
+def gerar_etiquetas(itens, api=None, pasta=PASTA_SAIDA, tentativas=1, espera=15):
     """itens: chaves de 44 digitos ou caminhos de XML.
+    tentativas > 1: repete a busca enquanto a NF recem-enviada ainda nao tem etiqueta.
     Retorna {chave: {"ok", "pdf", "volumes", "erro"}} - nunca para no meio por causa de uma NF."""
     api = api or JamefAPI()
     pasta.mkdir(parents=True, exist_ok=True)
@@ -130,7 +148,12 @@ def gerar_etiquetas(itens, api=None, pasta=PASTA_SAIDA):
         except (ValueError, ET.ParseError, OSError) as e:
             res[str(item)] = {"ok": False, "pdf": None, "volumes": 0, "erro": str(e)}
             continue
-        ok, dado = api.etiqueta(chave, "ZPL")
+        for t in range(tentativas):
+            ok, dado = api.etiqueta(chave, "ZPL")
+            if ok or t == tentativas - 1:
+                break
+            print(f"...  {chave}: etiqueta ainda nao disponivel, nova tentativa em {espera}s")
+            time.sleep(espera)
         zpls = [_zpl(z) for z in (dado.get("etiquetasZPL") or [])] if ok else []
         if not zpls:
             erro = dado if not ok else "API respondeu OK mas sem etiquetasZPL"
@@ -157,11 +180,21 @@ if __name__ == "__main__":
     api = JamefAPI()
     api.login()
     print("OK  login na API JAMEF")
+
     if args[0] == "--dados":
         for item in args[1:]:
             ok, d = api.etiqueta(resolver_chave(item), "DADOS")
             print(json.dumps(d, ensure_ascii=False, indent=2) if ok else f"ERRO {item}: {d}")
         sys.exit(0)
-    for chave, r in gerar_etiquetas(args, api).items():
+
+    tentativas = 1
+    if args[0] == "--enviar":
+        args, tentativas = args[1:], 4
+        for xml in args:
+            ok, resp = api.enviar_nf(xml)
+            texto = resp if isinstance(resp, str) else json.dumps(resp, ensure_ascii=False)[:1500]
+            print(f"{'OK  ' if ok else 'ERRO'} envio {xml}: {texto}")
+
+    for chave, r in gerar_etiquetas(args, api, tentativas=tentativas).items():
         print(f"OK  {chave} -> {r['pdf']} ({r['volumes']} vol.)" if r["ok"]
               else f"ERRO {chave}: {r['erro']}")
