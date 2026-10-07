@@ -20,5 +20,6 @@ jobs:
         env:
           JAMEF_API_USUARIO: ${{ secrets.JAMEF_API_USUARIO }}
           JAMEF_API_SENHA: ${{ secrets.JAMEF_API_SENHA }}
+          JAMEF_ETIQUETA_PATH: ${{ secrets.JAMEF_ETIQUETA_PATH }}
           CHAVES: ${{ inputs.chaves }}
         run: python jamef_etiqueta.py $CHAVES
