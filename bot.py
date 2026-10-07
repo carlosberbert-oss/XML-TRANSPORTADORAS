@@ -665,102 +665,13 @@ def capturar_screenshot(page, nome: str):
 
 
 # ════════════════════════════════════════════════════════════
-#  MAIN
+#  PORTAL JAMEF — tudo via browser (evita bloqueio Akamai 403)
+#  Todas as chamadas de API são feitas com fetch() DE DENTRO da
+#  página do Chrome, levando os cookies de verificação do Akamai.
 # ════════════════════════════════════════════════════════════
-# ════════════════════════════════════════════════════════════
-#  PORTAL JAMEF — Login via AWS Cognito + Upload XMLs
-# ════════════════════════════════════════════════════════════
-
-def gmail_ler_codigo_mfa(remetente_filtro: str = "jamef", timeout_seg: int = 120) -> str | None:
-    """
-    Lê o código MFA enviado pela JAMEF no Gmail.
-    Busca pelo assunto: 'Portal Cliente Jamef - Código de Verificação MFA'
-    """
-    import json
-    import base64
-    import time
-    import re
-    from google.oauth2.credentials import Credentials
-    from googleapiclient.discovery import build
-
-    print(f"\n📬  Aguardando código MFA no Gmail (até {timeout_seg}s)...")
-
-    oauth_raw = os.getenv("GMAIL_OAUTH_TOKEN", "")
-    if not oauth_raw:
-        print("   ⚠️  GMAIL_OAUTH_TOKEN não configurado.")
-        return None
-
-    try:
-        oauth_data = json.loads(base64.b64decode(oauth_raw).decode("utf-8"))
-        creds = Credentials(
-            token=None,
-            refresh_token=oauth_data["refresh_token"],
-            token_uri=oauth_data["token_uri"],
-            client_id=oauth_data["client_id"],
-            client_secret=oauth_data["client_secret"],
-            scopes=["https://www.googleapis.com/auth/gmail.readonly"]
-        )
-        service = build("gmail", "v1", credentials=creds)
-
-        inicio = time.time()
-        # IDs de mensagens já vistas (para não reprocessar emails antigos)
-        ids_vistos = set()
-
-        # Primeiro scan: marca todos os emails existentes como já vistos
-        try:
-            resultado_inicial = service.users().messages().list(
-                userId="me",
-                q='from:naoresponda@jamef.com.br subject:"Portal Cliente Jamef"',
-                maxResults=10
-            ).execute()
-            for msg in resultado_inicial.get("messages", []):
-                ids_vistos.add(msg["id"])
-            print(f"   ℹ️  {len(ids_vistos)} email(s) antigo(s) ignorado(s).")
-        except Exception:
-            pass
-
-        while time.time() - inicio < timeout_seg:
-            resultado = service.users().messages().list(
-                userId="me",
-                q='from:naoresponda@jamef.com.br subject:"Portal Cliente Jamef"',
-                maxResults=5
-            ).execute()
-
-            mensagens = resultado.get("messages", [])
-            for msg in mensagens:
-                # Pula emails que já existiam antes do login
-                if msg["id"] in ids_vistos:
-                    continue
-
-                msg_data = service.users().messages().get(
-                    userId="me",
-                    id=msg["id"],
-                    format="full"
-                ).execute()
-
-                corpo = _extrair_corpo_email(msg_data.get("payload", {}))
-
-                # Procura por código de 6 dígitos
-                codigos = re.findall(r'\b(\d{6})\b', corpo)
-                if codigos:
-                    codigo = codigos[0]
-                    print(f"   ✅  Código MFA encontrado: {codigo}")
-                    return codigo
-
-            print(f"   ⏳  Aguardando email... ({int(time.time()-inicio)}s)")
-            time.sleep(5)
-
-        print("   ❌  Timeout — código MFA não encontrado no Gmail.")
-        return None
-
-    except Exception as e:
-        print(f"   ❌  Erro ao ler Gmail: {e}")
-        return None
-
 
 def _extrair_corpo_email(payload: dict) -> str:
     """Extrai o texto do corpo do email recursivamente."""
-    import base64
     corpo = ""
     if "parts" in payload:
         for part in payload["parts"]:
@@ -775,699 +686,381 @@ def _extrair_corpo_email(payload: dict) -> str:
     return corpo
 
 
-def jamef_login(email: str, senha: str, page=None) -> str | None:
-    """
-    Faz login no portal JAMEF usando o Playwright (browser real).
-    Evita bloqueio 403 por WAF/Cloudflare.
-    1. Navega para /login via browser
-    2. Preenche email e senha
-    3. Aguarda código MFA no Gmail
-    4. Preenche o código MFA
-    5. Captura o idToken dos cookies
-    """
-    import json
-    import time
-
-    print("\n🔐  Fazendo login no portal JAMEF via browser...")
-
-    if page is None:
-        print("   ❌  Page não disponível para login JAMEF.")
-        return None
-
-    try:
-        # Navega para a página de login
-        page.goto(f"{JAMEF_URL_BASE}/login", wait_until="networkidle", timeout=20_000)
-        page.wait_for_timeout(2_000)
-
-        # Preenche email
-        campo_email = page.locator("input[type='email'], input[name='email'], input[placeholder*='mail']").first
-        campo_email.wait_for(timeout=8_000)
-        campo_email.fill(email)
-        page.wait_for_timeout(500)
-
-        # Preenche senha
-        campo_senha = page.locator("input[type='password'], input[name='password'], input[name='senha']").first
-        campo_senha.fill(senha)
-        page.wait_for_timeout(500)
-
-        # Marca os IDs de emails MFA já existentes antes de clicar em login
-        ids_vistos = set()
-        try:
-            from google.oauth2.credentials import Credentials
-            from googleapiclient.discovery import build
-            import base64 as b64
-            oauth_raw = os.getenv("GMAIL_OAUTH_TOKEN", "")
-            if oauth_raw:
-                oauth_data = json.loads(b64.b64decode(oauth_raw).decode("utf-8"))
-                creds = Credentials(
-                    token=None,
-                    refresh_token=oauth_data["refresh_token"],
-                    token_uri=oauth_data["token_uri"],
-                    client_id=oauth_data["client_id"],
-                    client_secret=oauth_data["client_secret"],
-                    scopes=["https://www.googleapis.com/auth/gmail.readonly"]
-                )
-                svc = build("gmail", "v1", credentials=creds)
-                res = svc.users().messages().list(
-                    userId="me",
-                    q='from:naoresponda@jamef.com.br subject:"Portal Cliente Jamef"',
-                    maxResults=10
-                ).execute()
-                for msg in res.get("messages", []):
-                    ids_vistos.add(msg["id"])
-                print(f"   ℹ️  {len(ids_vistos)} email(s) antigo(s) marcado(s).")
-        except Exception:
-            pass
-
-        # Clica no botão de login
-        page.locator("button[type='submit'], input[type='submit'], button:has-text('Entrar'), button:has-text('Login')").first.click()
-        page.wait_for_timeout(2_000)
-
-        # Verifica se apareceu campo de MFA
-        campo_mfa = page.locator("input[placeholder*='código'], input[placeholder*='MFA'], input[placeholder*='verificação'], input[maxlength='6']").first
-        try:
-            campo_mfa.wait_for(timeout=8_000)
-            print("   🔐  Campo MFA detectado na tela!")
-        except:
-            # Pode não ter campo MFA na tela — tenta ler o Gmail de qualquer forma
-            print("   ℹ️  Campo MFA não detectado na tela, aguardando email...")
-
-        # Lê o código MFA do Gmail
-        codigo = gmail_ler_codigo_mfa_com_vistos(ids_vistos)
-        if not codigo:
-            print("   ❌  Código MFA não encontrado no Gmail.")
-            return None
-
-        # Preenche o código MFA se o campo existir na tela
-        try:
-            if campo_mfa.is_visible():
-                campo_mfa.fill(codigo)
-                page.wait_for_timeout(500)
-                page.locator("button[type='submit'], input[type='submit'], button:has-text('Verificar'), button:has-text('Confirmar')").first.click()
-                page.wait_for_timeout(3_000)
-        except Exception:
-            pass
-
-        # Aguarda navegação para a página principal
-        try:
-            page.wait_for_url(lambda url: "login" not in url.lower(), timeout=10_000)
-        except Exception:
-            pass
-
-        page.wait_for_timeout(2_000)
-
-        # Captura o idToken dos cookies
-        cookies = page.context.cookies()
-        for cookie in cookies:
-            if cookie["name"] == "idToken":
-                print("   ✅  Login JAMEF OK! idToken capturado.")
-                return cookie["value"]
-            if cookie["name"] == "accessToken":
-                print("   ✅  Login JAMEF OK! accessToken capturado.")
-                return cookie["value"]
-
-        print(f"   ⚠️  Login aparentemente OK mas token não encontrado nos cookies.")
-        print(f"   ℹ️  URL atual: {page.url}")
-        return None
-
-    except Exception as e:
-        print(f"   ❌  Erro no login JAMEF via browser: {e}")
-        return None
-
-
-def gmail_ler_codigo_mfa_com_vistos(ids_vistos: set, timeout_seg: int = 120) -> str | None:
-    """Lê o código MFA do Gmail ignorando emails já vistos."""
-    import json
-    import base64 as b64
-    import time
-    import re
-
-    try:
-        from google.oauth2.credentials import Credentials
-        from googleapiclient.discovery import build
-    except ImportError:
-        return None
+def _gmail_service():
+    """Cria o serviço do Gmail usando o GMAIL_OAUTH_TOKEN."""
+    from google.oauth2.credentials import Credentials
+    from googleapiclient.discovery import build
 
     oauth_raw = os.getenv("GMAIL_OAUTH_TOKEN", "")
     if not oauth_raw:
+        print("   ⚠️  GMAIL_OAUTH_TOKEN não configurado.")
         return None
+    oauth_data = json.loads(base64.b64decode(oauth_raw).decode("utf-8"))
+    creds = Credentials(
+        token=None,
+        refresh_token=oauth_data["refresh_token"],
+        token_uri=oauth_data["token_uri"],
+        client_id=oauth_data["client_id"],
+        client_secret=oauth_data["client_secret"],
+        scopes=["https://www.googleapis.com/auth/gmail.readonly"]
+    )
+    return build("gmail", "v1", credentials=creds)
 
+
+GMAIL_QUERY_MFA = 'from:naoresponda@jamef.com.br subject:"Portal Cliente Jamef"'
+
+
+def gmail_ids_mfa_existentes(service) -> set:
+    """Marca os emails de MFA que já existem (para ignorar códigos antigos)."""
     try:
-        oauth_data = json.loads(b64.b64decode(oauth_raw).decode("utf-8"))
-        creds = Credentials(
-            token=None,
-            refresh_token=oauth_data["refresh_token"],
-            token_uri=oauth_data["token_uri"],
-            client_id=oauth_data["client_id"],
-            client_secret=oauth_data["client_secret"],
-            scopes=["https://www.googleapis.com/auth/gmail.readonly"]
-        )
-        service = build("gmail", "v1", credentials=creds)
+        res = service.users().messages().list(userId="me", q=GMAIL_QUERY_MFA, maxResults=20).execute()
+        return {m["id"] for m in res.get("messages", [])}
+    except Exception as e:
+        print(f"   ⚠️  Não consegui listar emails antigos: {e}")
+        return set()
 
-        inicio = time.time()
-        while time.time() - inicio < timeout_seg:
-            resultado = service.users().messages().list(
-                userId="me",
-                q='from:naoresponda@jamef.com.br subject:"Portal Cliente Jamef"',
-                maxResults=5
-            ).execute()
 
-            for msg in resultado.get("messages", []):
+def gmail_aguardar_codigo_mfa(service, ids_vistos: set, timeout_seg: int = 120) -> str | None:
+    """Aguarda chegar um email NOVO da JAMEF e extrai o código de 6 dígitos."""
+    import re
+    import time
+
+    print(f"\n📬  Aguardando código MFA no Gmail (até {timeout_seg}s)...")
+    inicio = time.time()
+    while time.time() - inicio < timeout_seg:
+        try:
+            res = service.users().messages().list(userId="me", q=GMAIL_QUERY_MFA, maxResults=5).execute()
+            for msg in res.get("messages", []):
                 if msg["id"] in ids_vistos:
                     continue
-
-                msg_data = service.users().messages().get(
-                    userId="me", id=msg["id"], format="full"
-                ).execute()
-                corpo = _extrair_corpo_email(msg_data.get("payload", {}))
+                dados = service.users().messages().get(userId="me", id=msg["id"], format="full").execute()
+                corpo = _extrair_corpo_email(dados.get("payload", {}))
                 codigos = re.findall(r"\b(\d{6})\b", corpo)
                 if codigos:
                     print(f"   ✅  Código MFA encontrado: {codigos[0]}")
                     return codigos[0]
-
-            print(f"   ⏳  Aguardando email MFA... ({int(time.time()-inicio)}s)")
-            time.sleep(5)
-
-        return None
-    except Exception as e:
-        print(f"   ❌  Erro ao ler Gmail: {e}")
-        return None
+        except Exception as e:
+            print(f"   ⚠️  Erro lendo Gmail: {e}")
+        print(f"   ⏳  Aguardando email... ({int(time.time() - inicio)}s)")
+        time.sleep(5)
+    print("   ❌  Timeout — código MFA não chegou no Gmail.")
+    return None
 
 
-def jamef_confirmar_mfa(email: str, codigo: str, session: str | None) -> str | None:
-    """Confirma o código MFA no portal JAMEF e retorna o idToken dos cookies."""
-    import urllib.request
-    import urllib.parse
-    import http.cookiejar
-    import json
-
-    print(f"   🔐  Confirmando código MFA: {codigo}")
-
-    payload = json.dumps({
-        "challengeName": "EMAIL_MFA",
-        "email": email,
-        "mfaCode": codigo,
-        "session": session
-    }).encode("utf-8")
-
-    # Usa CookieJar para capturar os cookies da resposta
-    cookie_jar = http.cookiejar.CookieJar()
-    opener = urllib.request.build_opener(
-        urllib.request.HTTPCookieProcessor(cookie_jar)
+def jamef_fetch(page, path: str, method: str = "GET", body=None, binario: bool = False) -> dict:
+    """
+    Faz uma chamada à API da JAMEF com fetch() de dentro da página.
+    Assim a requisição sai do próprio Chrome, com os cookies do Akamai e da sessão.
+    """
+    return page.evaluate(
+        """async ({url, method, body, binario}) => {
+            const opts = {method, credentials: 'include',
+                          headers: {'Accept': 'application/json, text/plain, */*'}};
+            if (body !== null) {
+                opts.headers['Content-Type'] = 'application/json';
+                opts.body = JSON.stringify(body);
+            }
+            const r = await fetch(url, opts);
+            let data;
+            if (binario) {
+                const buf = new Uint8Array(await r.arrayBuffer());
+                let s = '';
+                for (let i = 0; i < buf.length; i += 0x8000)
+                    s += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+                data = btoa(s);
+            } else {
+                data = await r.text();
+            }
+            return {status: r.status, ok: r.ok, data,
+                    contentType: r.headers.get('content-type') || ''};
+        }""",
+        {"url": JAMEF_URL_BASE + path, "method": method, "body": body, "binario": binario},
     )
 
-    req = urllib.request.Request(
-        f"{JAMEF_URL_BASE}/api/auth/confirm-mfa",
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Origin": JAMEF_URL_BASE,
-            "Referer": f"{JAMEF_URL_BASE}/login"
-        },
-        method="POST"
-    )
+
+def _bloqueado_akamai(texto: str) -> bool:
+    return "Access Denied" in (texto or "") and "permission to access" in (texto or "")
+
+
+def jamef_login(email: str, senha: str, page) -> bool:
+    """
+    Login no portal JAMEF pelo próprio browser:
+    1. Abre /login (o Akamai valida o browser e grava os cookies dele)
+    2. fetch POST /api/auth/login  → JAMEF manda o código por email
+    3. Lê o código no Gmail
+    4. fetch POST /api/auth/confirm-mfa → sessão fica gravada nos cookies do browser
+    """
+    print("\n🔐  Fazendo login no portal JAMEF (via browser)...")
 
     try:
-        with opener.open(req, timeout=15) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-            print(f"   ℹ️  Resposta confirm-mfa: {body}")
+        page.goto(f"{JAMEF_URL_BASE}/login", wait_until="domcontentloaded", timeout=30_000)
+        page.wait_for_timeout(4_000)  # tempo para o script do Akamai rodar
 
-        # Extrai idToken dos cookies
-        for cookie in cookie_jar:
-            if cookie.name == "idToken":
-                print("   ✅  MFA confirmado! idToken obtido dos cookies.")
-                return cookie.value
+        if _bloqueado_akamai(page.content()):
+            print("   ❌  A JAMEF bloqueou o acesso a esta máquina/IP (Akamai) já na página de login.")
+            capturar_screenshot(page, "jamef_bloqueado_login")
+            return False
 
-        # Fallback: tenta accessToken
-        for cookie in cookie_jar:
-            if cookie.name == "accessToken":
-                print("   ✅  MFA confirmado! accessToken obtido dos cookies.")
-                return cookie.value
+        # Gmail: marca emails antigos ANTES de pedir o código novo
+        gmail = _gmail_service()
+        if gmail is None:
+            return False
+        ids_vistos = gmail_ids_mfa_existentes(gmail)
+        print(f"   ℹ️  {len(ids_vistos)} email(s) de MFA antigo(s) serão ignorados.")
 
-        print(f"   ❌  Token não encontrado nos cookies.")
-        print(f"   ℹ️  Cookies recebidos: {[c.name for c in cookie_jar]}")
-        return None
+        # Passo 1 — login
+        r = jamef_fetch(page, "/api/auth/login", "POST", {"email": email, "password": senha})
+        if _bloqueado_akamai(r["data"]):
+            print(f"   ❌  Akamai bloqueou /api/auth/login (HTTP {r['status']}).")
+            capturar_screenshot(page, "jamef_bloqueado_api")
+            return False
+        if not r["ok"]:
+            print(f"   ❌  Login JAMEF HTTP {r['status']}: {r['data'][:200]}")
+            return False
 
-    except urllib.error.HTTPError as e:
-        erro = e.read().decode("utf-8") if e.fp else str(e)
-        print(f"   ❌  confirm-mfa HTTP {e.code}: {erro[:200]}")
-        return None
+        dados = json.loads(r["data"] or "{}")
+        print(f"   ℹ️  Challenge: {dados.get('challengeName')} | {dados.get('message', '')}")
+
+        if dados.get("challengeName") != "EMAIL_MFA":
+            print("   ✅  Login JAMEF OK (sem MFA).")
+            return True
+
+        # Passo 2 — código do Gmail
+        codigo = gmail_aguardar_codigo_mfa(gmail, ids_vistos)
+        if not codigo:
+            return False
+
+        # Passo 3 — confirma MFA (cookies de sessão ficam no browser)
+        r2 = jamef_fetch(page, "/api/auth/confirm-mfa", "POST", {
+            "challengeName": "EMAIL_MFA",
+            "email": email,
+            "mfaCode": codigo,
+            "session": dados.get("session"),
+        })
+        if not r2["ok"]:
+            print(f"   ❌  confirm-mfa HTTP {r2['status']}: {r2['data'][:200]}")
+            return False
+
+        nomes_cookies = [c["name"] for c in page.context.cookies(JAMEF_URL_BASE)]
+        if "idToken" in nomes_cookies or "accessToken" in nomes_cookies:
+            print("   ✅  Login JAMEF com MFA OK!")
+            return True
+
+        print(f"   ⚠️  MFA respondeu {r2['data'][:100]}, mas não achei o token nos cookies: {nomes_cookies}")
+        return False
+
     except Exception as e:
-        print(f"   ❌  confirm-mfa erro: {e}")
-        return None
+        print(f"   ❌  Erro no login JAMEF: {e}")
+        capturar_screenshot(page, "jamef_erro_login")
+        return False
 
 
 def jamef_extrair_dados_xml(xml_path: Path) -> dict:
-    """
-    Extrai dados importantes do XML da NF-e:
-    - chave: chave de acesso 44 dígitos (para gerar etiqueta)
-    - nNF: número da nota fiscal (para o OMS)
-    - filial: código da filial
-    """
+    """Extrai chave de acesso (44 dígitos) e número da NF do XML."""
     try:
         import xml.etree.ElementTree as ET
-        tree = ET.parse(str(xml_path))
-        root = tree.getroot()
+        root = ET.parse(str(xml_path)).getroot()
 
-        # Remove namespace para facilitar busca
         def sem_ns(tag):
             return tag.split("}")[-1] if "}" in tag else tag
 
-        def encontrar(root, tag_alvo):
-            for el in root.iter():
-                if sem_ns(el.tag) == tag_alvo:
-                    return el.text
-            return None
-
-        # Chave de acesso (44 dígitos) — vem no atributo Id da tag infNFe
-        chave = None
+        chave, n_nf = None, None
         for el in root.iter():
-            if sem_ns(el.tag) == "infNFe":
+            nome = sem_ns(el.tag)
+            if nome == "infNFe" and not chave:
                 id_attr = el.get("Id", "")
                 if id_attr.startswith("NFe"):
-                    chave = id_attr[3:]  # remove "NFe" do início
-                break
-
-        # Se não achou no Id, tenta na tag chNFe
-        if not chave:
-            chave = encontrar(root, "chNFe")
-
-        # Número da NF
-        n_nf = encontrar(root, "nNF")
-
-        # Filial (padrão 57)
-        filial = "57"
-
-        print(f"   📋  XML: chave={chave[:10] if chave else 'N/A'}... | NF={n_nf} | filial={filial}")
-
-        return {
-            "chave": chave,
-            "nNF": n_nf,
-            "filial": filial
-        }
-
+                    chave = id_attr[3:]
+            elif nome == "chNFe" and not chave:
+                chave = el.text
+            elif nome == "nNF" and not n_nf:
+                n_nf = el.text
+        return {"chave": chave, "nNF": n_nf, "filial": "57"}
     except Exception as e:
-        print(f"   ⚠️  Erro ao extrair dados do XML: {e}")
+        print(f"   ⚠️  Erro ao ler XML {xml_path.name}: {e}")
         return {"chave": None, "nNF": None, "filial": "57"}
 
 
-def jamef_verificar_status_etiqueta(chave: str, id_token: str, n_nf: str,
-                                     page=None,
-                                     max_tentativas: int = 12, intervalo: int = 10) -> str:
+def jamef_enviar_xml(page, xml_path: Path) -> dict:
+    """Envia um XML para /api/label/send-note de dentro do browser."""
+    dados = jamef_extrair_dados_xml(xml_path)
+    n_nf = dados["nNF"]
+    try:
+        xml_b64 = base64.b64encode(xml_path.read_bytes()).decode("utf-8")
+        r = jamef_fetch(page, "/api/label/send-note", "POST", {
+            "cgc": JAMEF_CGC,
+            "filialOrigem": dados["filial"],
+            "xmlBase64": xml_b64,
+        })
+        if r["ok"]:
+            print(f"   ✅  NF {n_nf} enviada à JAMEF.")
+            return {"arquivo": xml_path.name, "ok": True, "nNF": n_nf, "chave": dados["chave"]}
+        motivo = "bloqueio Akamai" if _bloqueado_akamai(r["data"]) else r["data"][:120]
+        print(f"   ❌  NF {n_nf}: HTTP {r['status']} — {motivo}")
+        return {"arquivo": xml_path.name, "ok": False, "nNF": n_nf, "erro": motivo}
+    except Exception as e:
+        print(f"   ❌  NF {n_nf}: {e}")
+        return {"arquivo": xml_path.name, "ok": False, "nNF": n_nf, "erro": str(e)}
+
+
+def _jamef_linha_da_nf(page, n_nf: str):
+    """Retorna a linha (tr) da tabela de etiquetas cuja célula é exatamente o número da NF."""
+    for linha in page.locator("table tbody tr").all():
+        celulas = [c.strip() for c in linha.locator("td").all_inner_texts()]
+        if str(n_nf) in celulas:
+            return linha, " ".join(celulas)
+    return None, ""
+
+
+def jamef_ler_status(page, nfs: list[str]) -> dict:
+    """Abre /etiquetas uma vez e devolve {nf: 'sucesso' | 'ja_cadastrada' | 'outro' | None}."""
+    page.goto(f"{JAMEF_URL_BASE}/etiquetas", wait_until="networkidle", timeout=30_000)
+    page.wait_for_timeout(3_000)
+    resultado = {}
+    for nf in nfs:
+        _, texto = _jamef_linha_da_nf(page, nf)
+        t = texto.lower()
+        if not texto:
+            resultado[nf] = None
+        elif "sucesso" in t:
+            resultado[nf] = "sucesso"
+        elif "cadastrada" in t:
+            resultado[nf] = "ja_cadastrada"
+        else:
+            resultado[nf] = "outro"
+    return resultado
+
+
+def jamef_baixar_etiqueta(page, n_nf: str) -> Path | None:
     """
-    Verifica o status da etiqueta na JAMEF lendo a tabela do site.
-    Usa o page do Playwright já aberto (não abre novo browser).
-    Status: 'Sucesso' ou 'NOTA FISCAL JA CADASTRADA'
+    Clica no botão de imprimir da NF. A JAMEF gera o PDF no próprio browser
+    e abre num link blob: — capturamos esse link e salvamos o PDF.
+    A página /etiquetas já precisa estar aberta.
     """
-    import time
-
-    print(f"   ⏳  Aguardando processamento da etiqueta NF {n_nf}...")
-
-    if page is None:
-        print("   ⚠️  Page não disponível — pulando verificação de status.")
-        return "timeout"
-
-    for tentativa in range(max_tentativas):
-        time.sleep(intervalo)
-        print(f"   ⏳  Verificando status NF {n_nf} (tentativa {tentativa+1}/{max_tentativas})...")
-
-        try:
-            # Navega para a tela de etiquetas da JAMEF com cookie já injetado
-            page.goto(
-                f"{JAMEF_URL_BASE}/etiquetas",
-                wait_until="networkidle",
-                timeout=20_000
-            )
-            page.wait_for_timeout(3_000)
-
-            # Lê todas as linhas da tabela
-            linhas = page.locator("table tbody tr, .MuiTableBody-root tr").all()
-
-            for linha in linhas:
-                texto = linha.inner_text().replace("\n", " ").strip()
-                if str(n_nf) in texto:
-                    status_lower = texto.lower()
-                    print(f"   ℹ️  NF {n_nf}: {texto[:80]}")
-
-                    if "sucesso" in status_lower:
-                        print(f"   ✅  NF {n_nf}: Sucesso!")
-                        return "sucesso"
-                    elif "ja cadastrada" in status_lower or "já cadastrada" in status_lower:
-                        print(f"   ℹ️  NF {n_nf}: Já cadastrada.")
-                        return "ja_cadastrada"
-                    else:
-                        print(f"   ⏳  NF {n_nf}: ainda processando...")
-                        break
-
-        except Exception as e:
-            print(f"   ⚠️  Erro na verificação (tentativa {tentativa+1}): {e}")
-
-    print(f"   ⚠️  NF {n_nf}: timeout aguardando etiqueta.")
-    return "timeout"
-
-
-def jamef_baixar_etiqueta(chave: str, id_token: str, n_nf: str, page=None) -> Path | None:
-    """
-    Baixa a etiqueta PDF da JAMEF clicando no botão de imprimir
-    e capturando a nova aba que abre com o PDF.
-    """
-    import urllib.request
-    import json
-
-    # Se já foi salva durante a verificação de status, retorna direto
     caminho = PASTA_XMLS / f"etiqueta_JAMEF_NF{n_nf}.pdf"
-    if caminho.exists() and caminho.stat().st_size > 100:
-        print(f"   ✅  Etiqueta já disponível: {caminho.name}")
+    if caminho.exists() and caminho.stat().st_size > 1000:
         return caminho
 
-    print(f"   🏷️  Baixando etiqueta para NF {n_nf}...")
-
-    # Tenta via API primeiro (request direto)
-    try:
-        payload = json.dumps({"chave": chave}).encode("utf-8")
-        req = urllib.request.Request(
-            f"{JAMEF_URL_BASE}/api/label/render",
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": id_token,
-                "Cookie": f"idToken={id_token}",
-                "Origin": JAMEF_URL_BASE,
-                "Referer": f"{JAMEF_URL_BASE}/etiquetas"
-            },
-            method="POST"
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            conteudo = resp.read()
-            # Verifica se é PDF válido
-            if conteudo[:4] == b"%PDF" or len(conteudo) > 5000:
-                caminho.write_bytes(conteudo)
-                print(f"   ✅  Etiqueta salva via API: {caminho.name}")
-                return caminho
-    except Exception as e:
-        print(f"   ⚠️  API falhou ({e}), tentando via browser...")
-
-    # Fallback: usa o Playwright para clicar no botão e capturar a nova aba
-    if page is None:
-        print(f"   ❌  Sem page disponível para baixar etiqueta NF {n_nf}.")
+    linha, _ = _jamef_linha_da_nf(page, n_nf)
+    if linha is None:
+        print(f"   ⚠️  NF {n_nf} não está na tabela de etiquetas.")
         return None
 
     try:
-        # Navega para a tela de etiquetas da JAMEF
-        page.goto(f"{JAMEF_URL_BASE}/etiquetas", wait_until="networkidle", timeout=20_000)
-        page.wait_for_timeout(2_000)
+        # Intercepta o window.open para capturar o link do PDF sem abrir aba nova
+        page.evaluate("""() => {
+            window.__etiquetas = [];
+            if (!window.__openOriginal) window.__openOriginal = window.open;
+            window.open = function(u) { window.__etiquetas.push(String(u)); return null; };
+        }""")
 
-        # Encontra o botão de imprimir/download da NF correta
-        # O botão fica na linha que contém o número da NF
-        linhas = page.locator("table tbody tr, .MuiTableBody-root tr").all()
-        btn_imprimir = None
+        linha.locator("button").last.click()
 
-        for linha in linhas:
-            if str(n_nf) in linha.inner_text():
-                # Botão de imprimir é o último elemento da linha (ícone de impressora)
-                btn_imprimir = linha.locator("button, a[href*='print'], svg").last
+        url_pdf = None
+        for _ in range(60):  # até 30s (a geração leva ~5s)
+            capturados = page.evaluate("() => window.__etiquetas || []")
+            if capturados:
+                url_pdf = capturados[-1]
                 break
-
-        if btn_imprimir is None:
-            print(f"   ❌  Botão de imprimir não encontrado para NF {n_nf}.")
-            return None
-
-        # Captura a nova aba que abre ao clicar no botão
-        with page.context.expect_page() as nova_aba_info:
-            btn_imprimir.click()
-
-        nova_aba = nova_aba_info.value
-        nova_aba.wait_for_load_state("networkidle", timeout=15_000)
-        page.wait_for_timeout(2_000)
-
-        # Baixa o PDF da nova aba via request autenticado
-        url_pdf = nova_aba.url
-        print(f"   ℹ️  URL da etiqueta: {url_pdf[:60]}...")
-
-        response = page.request.get(url_pdf)
-        if response.ok:
-            caminho.write_bytes(response.body())
-            print(f"   ✅  Etiqueta salva via browser: {caminho.name}")
-            nova_aba.close()
-            return caminho
-        else:
-            print(f"   ❌  Erro ao baixar PDF: HTTP {response.status}")
-            nova_aba.close()
-            return None
-
-    except Exception as e:
-        print(f"   ❌  Erro ao capturar etiqueta NF {n_nf}: {e}")
-        return None
-
-
-def platinum_fazer_login(page) -> bool:
-    """Faz login no Platinum OMS."""
-    URL_LOGIN_PLATINUM = "https://oms.tpl.com.br/login"
-    print("\n🔐  Fazendo login no Platinum OMS...")
-    try:
-        page.goto(URL_LOGIN_PLATINUM, wait_until="domcontentloaded", timeout=20_000)
-        page.wait_for_timeout(1_500)
-
-        page.locator("input#email, input[name='email']").fill("felipe.azevedo@zeb.mx")
-        page.locator("input#password, input[name='senha']").fill("Zebrands-20251")
-        page.locator("button[type='submit'], input[type='submit']").first.click()
-        page.wait_for_timeout(3_000)
-
-        if "login" not in page.url.lower():
-            print("   ✅  Login Platinum OK!")
-            return True
-        print("   ❌  Falha no login Platinum.")
-        return False
-    except Exception as e:
-        print(f"   ❌  Erro no login Platinum: {e}")
-        return False
-
-
-def platinum_upload_etiqueta(page, pdf_path: Path, n_nf: str) -> bool:
-    """
-    Faz upload da etiqueta PDF no Platinum OMS.
-    - Pedido: "Zecore {n_nf}-1"
-    - Modelo: PDF - PADRAO (value=0)
-    """
-    URL_PLATINUM = "https://oms.tpl.com.br/pedidoEtiqueta"
-    pedido_oms   = f"Zecore {n_nf}-1"
-
-    print(f"\n   🏷️  Platinum OMS — Pedido: {pedido_oms}")
-
-    try:
-        page.goto(URL_PLATINUM, wait_until="domcontentloaded", timeout=30_000)
-        page.wait_for_timeout(3_000)
-
-        # Verifica se precisa logar novamente
-        if "login" in page.url.lower():
-            platinum_fazer_login(page)
-            page.goto(URL_PLATINUM, wait_until="domcontentloaded", timeout=30_000)
-            page.wait_for_timeout(3_000)
-
-        # Preenche o número do pedido
-        campo_pedido = page.locator("input[name='pedido']")
-        campo_pedido.wait_for(timeout=15_000)
-        campo_pedido.clear()
-        campo_pedido.fill(pedido_oms)
-        page.wait_for_timeout(500)
-
-        # Seleciona modelo PDF - PADRAO (value=0)
-        page.locator("select[name='modelo']").select_option("0")
-        page.wait_for_timeout(500)
-
-        # Upload do PDF via input file oculto
-        page.locator("input[name='upload']").set_input_files(str(pdf_path))
-        page.wait_for_timeout(1_500)
-
-        # Clica no botão UPLOAD (input type=button com onclick=valida())
-        page.locator("input[type='button'][value='UPLOAD'], input[onclick='valida()']").first.click()
-
-        # Upload é instantâneo — aguarda só o popup SweetAlert2 aparecer
-        try:
-            btn_ok = page.locator(".swal2-confirm").first
-            btn_ok.wait_for(timeout=5_000)
-            btn_ok.click()
             page.wait_for_timeout(500)
-            print(f"   ✅  NF {n_nf} enviada ao Platinum OMS!")
-        except Exception:
-            # Popup não apareceu — tenta botão OK genérico
-            try:
-                page.locator("button:has-text('OK')").first.click()
-                page.wait_for_timeout(500)
-            except Exception:
-                pass
-            print(f"   ✅  NF {n_nf} — upload enviado ao Platinum.")
 
-        return True
+        if not url_pdf:
+            print(f"   ⚠️  NF {n_nf}: a etiqueta não foi gerada em 30s.")
+            return None
 
-    except PlaywrightTimeout:
-        print(f"   ⚠️  Timeout no Platinum OMS para NF {n_nf}.")
-        return False
+        b64 = page.evaluate("""async (u) => {
+            const r = await fetch(u);
+            const buf = new Uint8Array(await r.arrayBuffer());
+            let s = '';
+            for (let i = 0; i < buf.length; i += 0x8000)
+                s += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+            return btoa(s);
+        }""", url_pdf)
+
+        conteudo = base64.b64decode(b64)
+        if conteudo[:4] != b"%PDF":
+            print(f"   ⚠️  NF {n_nf}: o arquivo capturado não é um PDF.")
+            return None
+
+        caminho.write_bytes(conteudo)
+        print(f"   🏷️  Etiqueta NF {n_nf} salva ({len(conteudo)//1024} KB).")
+        return caminho
+
     except Exception as e:
-        print(f"   ❌  Erro no Platinum OMS NF {n_nf}: {e}")
-        return False
-
-
-def jamef_extrair_filial(xml_path: Path) -> str:
-    """
-    Extrai o código da filial do XML da NF-e.
-    Tenta ler o campo cMunFG (município do fato gerador) ou usa '57' como padrão.
-    """
-    try:
-        import xml.etree.ElementTree as ET
-        tree = ET.parse(str(xml_path))
-        root = tree.getroot()
-
-        # Remove namespace para facilitar a busca
-        ns = {"nfe": "http://www.portalfiscal.inf.br/nfe"}
-
-        # Tenta encontrar a filial pelo CNPJ emitente — mapeamento fixo
-        # Por padrão usa filial 57 (matriz)
-        return "57"
-
-    except Exception:
-        return "57"
-
-
-def jamef_enviar_xml(xml_path: Path, id_token: str) -> dict:
-    """
-    Envia um XML para o portal JAMEF via API.
-    Retorna dict com status do envio, chave NF-e e número da NF.
-    """
-    import urllib.request
-    import json
-
-    nome = xml_path.name
-
-    # Extrai dados do XML antes de enviar
-    dados_xml = jamef_extrair_dados_xml(xml_path)
-    chave     = dados_xml.get("chave")
-    n_nf      = dados_xml.get("nNF")
-    filial    = dados_xml.get("filial", "57")
-
-    try:
-        xml_bytes  = xml_path.read_bytes()
-        xml_base64 = base64.b64encode(xml_bytes).decode("utf-8")
-
-        payload = json.dumps({
-            "cgc": JAMEF_CGC,
-            "filialOrigem": filial,
-            "xmlBase64": xml_base64
-        }).encode("utf-8")
-
-        req = urllib.request.Request(
-            f"{JAMEF_URL_BASE}/api/label/send-note",
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": id_token,
-                "Cookie": f"idToken={id_token}",
-                "Origin": JAMEF_URL_BASE,
-                "Referer": f"{JAMEF_URL_BASE}/etiquetas"
-            },
-            method="POST"
-        )
-
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            status = resp.status
-            body   = resp.read().decode("utf-8")
-            if status in (200, 201):
-                print(f"   ✅  {nome} enviado! (NF: {n_nf})")
-                return {"arquivo": nome, "ok": True, "status": status, "chave": chave, "nNF": n_nf}
-            else:
-                print(f"   ⚠️  {nome}: resposta {status}")
-                return {"arquivo": nome, "ok": False, "status": status, "erro": body, "chave": chave, "nNF": n_nf}
-
-    except urllib.error.HTTPError as e:
-        erro = e.read().decode("utf-8") if e.fp else str(e)
-        print(f"   ❌  {nome}: HTTP {e.code} — {erro[:100]}")
-        return {"arquivo": nome, "ok": False, "status": e.code, "erro": erro}
-    except Exception as e:
-        print(f"   ❌  {nome}: {e}")
-        return {"arquivo": nome, "ok": False, "erro": str(e)}
+        print(f"   ❌  Etiqueta NF {n_nf}: {e}")
+        return None
 
 
 def jamef_upload_xmls(xmls: list[Path], page=None) -> dict:
     """
-    Faz login no portal JAMEF, envia todos os XMLs,
-    baixa as etiquetas geradas e faz upload no Platinum OMS.
+    1. Login no portal JAMEF (browser + MFA pelo Gmail)
+    2. Envia TODOS os XMLs
+    3. Aguarda a JAMEF processar e lê o status de todas de uma vez
+    4. Baixa as etiquetas com status Sucesso ou Já Cadastrada
     """
+    import time
+
     email = os.getenv("JAMEF_EMAIL", "carlos.berbert@zeb.mx")
     senha = os.getenv("JAMEF_SENHA", "")
-
     if not senha:
-        print("   ⚠️  JAMEF_SENHA não configurada — pulando upload JAMEF.")
+        print("   ⚠️  JAMEF_SENHA não configurada — pulando portal JAMEF.")
+        return {"ok": [], "falha": [], "pulado": True}
+    if page is None:
+        print("   ⚠️  Browser não disponível — pulando portal JAMEF.")
         return {"ok": [], "falha": [], "pulado": True}
 
-    # Filtra só XMLs (não PDFs)
     apenas_xmls = [f for f in xmls if f.suffix.lower() == ".xml"]
-
     if not apenas_xmls:
         print("   ⚠️  Nenhum XML para enviar ao portal JAMEF.")
         return {"ok": [], "falha": []}
 
+    if not jamef_login(email, senha, page):
+        return {"ok": [], "falha": [f.name for f in apenas_xmls], "erro_login": True}
+
+    # 1) Envia todos os XMLs
     print(f"\n📤  Enviando {len(apenas_xmls)} XML(s) para o portal JAMEF...")
-
-    # Login
-    id_token = jamef_login(email, senha, page=page)
-    if not id_token:
-        return {"ok": [], "falha": [f.name for f in apenas_xmls]}
-
-    # Envia cada XML, baixa etiqueta e sobe no Platinum
-    resultados_ok    = []
-    resultados_falha = []
-    etiquetas_ok     = []
-    etiquetas_falha  = []
-
+    enviados, falhas = [], []
     for xml_path in apenas_xmls:
-        resultado = jamef_enviar_xml(xml_path, id_token)
+        res = jamef_enviar_xml(page, xml_path)
+        (enviados if res["ok"] else falhas).append(res)
+        page.wait_for_timeout(300)
 
-        if resultado["ok"]:
-            resultados_ok.append(resultado["arquivo"])
+    nfs_enviadas = [r["nNF"] for r in enviados if r.get("nNF")]
+    status_final = {}
 
-            chave = resultado.get("chave")
-            n_nf  = resultado.get("nNF")
+    # 2) Aguarda processamento e lê status de todas de uma vez (até ~3 min)
+    if nfs_enviadas:
+        print(f"\n⏳  Aguardando a JAMEF processar {len(nfs_enviadas)} etiqueta(s)...")
+        pendentes = list(nfs_enviadas)
+        for rodada in range(1, 9):
+            time.sleep(20)
+            lidos = jamef_ler_status(page, pendentes)
+            for nf, st in lidos.items():
+                if st in ("sucesso", "ja_cadastrada"):
+                    status_final[nf] = st
+            pendentes = [nf for nf in pendentes if nf not in status_final]
+            print(f"   🔄  Rodada {rodada}: {len(status_final)} pronta(s), {len(pendentes)} pendente(s).")
+            if not pendentes:
+                break
 
-            if not chave or not n_nf:
-                print(f"   ⚠️  Chave/NF não encontrada — etiqueta pulada.")
-                continue
-
-            # Injeta cookie da JAMEF no page antes de verificar status
-            if page:
-                try:
-                    page.context.add_cookies([{
-                        "name": "idToken",
-                        "value": id_token,
-                        "domain": "cliente.jamef.com.br",
-                        "path": "/"
-                    }])
-                except Exception:
-                    pass
-
-            status_etiqueta = jamef_verificar_status_etiqueta(chave, id_token, n_nf, page=page)
-
-            if status_etiqueta in ("sucesso", "ja_cadastrada"):
-                import time
-                time.sleep(5)
-                etiqueta_path = jamef_baixar_etiqueta(chave, id_token, n_nf, page=page)
-                if etiqueta_path:
-                    etiquetas_ok.append(f"NF {n_nf}")
-                    print(f"   ✅  Etiqueta NF {n_nf} salva!")
-                else:
-                    etiquetas_falha.append(f"NF {n_nf}")
-            else:
-                print(f"   ⚠️  NF {n_nf}: etiqueta não processada a tempo.")
-                etiquetas_falha.append(f"NF {n_nf} (timeout/erro)")
+    # 3) Baixa as etiquetas prontas (página /etiquetas já está aberta)
+    etiquetas_ok, etiquetas_falha = [], []
+    for nf in nfs_enviadas:
+        if nf not in status_final:
+            etiquetas_falha.append(f"NF {nf} (não processada)")
+            continue
+        if jamef_baixar_etiqueta(page, nf):
+            etiquetas_ok.append(f"NF {nf}")
         else:
-            resultados_falha.append(resultado["arquivo"])
+            etiquetas_falha.append(f"NF {nf} (erro no download)")
 
-    print(f"\n   📊  JAMEF Portal: {len(resultados_ok)} XML(s) enviado(s), {len(resultados_falha)} falha(s)")
+    print(f"\n   📊  JAMEF: {len(enviados)} XML(s) enviado(s), {len(falhas)} falha(s)")
     print(f"   🏷️  Etiquetas: {len(etiquetas_ok)} OK, {len(etiquetas_falha)} falha(s)")
     return {
-        "ok": resultados_ok,
-        "falha": resultados_falha,
+        "ok": [r["arquivo"] for r in enviados],
+        "falha": [f"NF {r.get('nNF')} — {r.get('erro', '')}" for r in falhas],
         "etiquetas_ok": etiquetas_ok,
-        "etiquetas_falha": etiquetas_falha
+        "etiquetas_falha": etiquetas_falha,
     }
 
 
@@ -1477,11 +1070,21 @@ def main():
 
     with sync_playwright() as p:
         is_ci = os.getenv("CI", "false").lower() == "true"
-        browser = p.chromium.launch(headless=is_ci, slow_mo=0 if is_ci else 400)
+        headless = os.getenv("HEADLESS", "false").lower() == "true"
+        browser = p.chromium.launch(
+            headless=headless,
+            slow_mo=0 if is_ci else 300,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
         context = browser.new_context(
             viewport={"width": 1600, "height": 1000},
-            accept_downloads=True
+            accept_downloads=True,
+            locale="pt-BR",
+            timezone_id="America/Sao_Paulo",
+            user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
         )
+        context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         page = context.new_page()
 
         try:
@@ -1604,8 +1207,11 @@ def main():
                 etiquetas_ok      = jamef_resultado.get("etiquetas_ok", [])
                 etiquetas_falha   = jamef_resultado.get("etiquetas_falha", [])
 
-                resumo_jamef = f"\n📤 *Portal JAMEF:* {ok_count} XML(s) OK, {fail_count} falha(s)"
-                resumo_jamef += f"\n🏷️ *Etiquetas Platinum:* {len(etiquetas_ok)} OK, {len(etiquetas_falha)} falha(s)"
+                if jamef_resultado.get("erro_login"):
+                    resumo_jamef = "\n❌ *Portal JAMEF:* falha no login (ver log do Actions)"
+                else:
+                    resumo_jamef = f"\n📤 *Portal JAMEF:* {ok_count} XML(s) OK, {fail_count} falha(s)"
+                resumo_jamef += f"\n🏷️ *Etiquetas JAMEF:* {len(etiquetas_ok)} OK, {len(etiquetas_falha)} falha(s)"
 
                 if etiquetas_ok:
                     resumo_jamef += f"\n   ✅ " + " | ".join(etiquetas_ok[:10])
