@@ -1,7 +1,7 @@
 name: Bot XML Transportadoras
 
 on:
-  # Disparado pelo cron-job.org nos horários configurados
+  # Disparado pelo cron-job.org (ou manualmente aqui no GitHub)
   workflow_dispatch:
     inputs:
       transportadora:
@@ -16,11 +16,6 @@ on:
 
 permissions:
   contents: write
-
-# Uma execução por vez: se uma atrasar, a próxima espera em vez de atropelar
-concurrency:
-  group: bot-xml-transportadoras
-  cancel-in-progress: false
 
 jobs:
   rodar-bot:
@@ -41,16 +36,8 @@ jobs:
 
       - name: Instalar dependências do sistema
         run: |
-          # Remove QUALQUER fonte apt que aponte pro Google Chrome —
-          # o nome/formato do arquivo varia entre versões do runner.
-          # Não usamos o Chrome (usamos o Chromium do Playwright).
-          sudo rm -f /etc/apt/sources.list.d/*google*
-          sudo grep -rl "dl.google.com" /etc/apt/ 2>/dev/null | sudo xargs -r rm -f
           sudo apt-get update
-          # Lista com nomes corretos pro Ubuntu 24.04 (noble / transição t64).
-          # NÃO usar "playwright install --with-deps": o Playwright 1.44
-          # ainda pede "libasound2", que não existe mais no noble.
-          sudo apt-get install -y \
+          sudo apt-get install -y xvfb \
             libasound2t64 libgbm1 libnss3 libxss1 libxtst6 \
             libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
             libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
@@ -69,11 +56,10 @@ jobs:
           GMAIL_OAUTH_TOKEN: ${{ secrets.GMAIL_OAUTH_TOKEN }}
           JAMEF_EMAIL: ${{ secrets.JAMEF_EMAIL }}
           JAMEF_SENHA: ${{ secrets.JAMEF_SENHA }}
-          CHAT_WEBHOOK_URL: ${{ secrets.CHAT_WEBHOOK_URL }}
-          PLATINUM_EMAIL: ${{ secrets.PLATINUM_EMAIL }}
-          PLATINUM_SENHA: ${{ secrets.PLATINUM_SENHA }}
+          HEADLESS: "false"
           CI: "true"
-        run: python bot.py
+        # Tela virtual: o Chrome roda "visível", o que o anti-bot da JAMEF detecta menos
+        run: xvfb-run -a python bot.py
 
       - name: Salvar logs
         if: always()
@@ -83,15 +69,6 @@ jobs:
           path: logs/
           retention-days: 7
 
-      - name: Salvar etiquetas JAMEF (backup)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: etiquetas-${{ github.run_id }}
-          path: xmls_baixados/etiqueta_*.pdf
-          if-no-files-found: ignore
-          retention-days: 30
-
       - name: Commitar histórico atualizado
         if: always()
         run: |
@@ -99,5 +76,4 @@ jobs:
           git config --local user.name "Bot XML Transportadoras"
           git add historico_processados.json
           git diff --staged --quiet || git commit -m "🤖 Histórico atualizado"
-          git pull --rebase --autostash || true
           git push
