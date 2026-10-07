@@ -1,0 +1,24 @@
+name: Teste etiqueta JAMEF (API)
+
+on:
+  workflow_dispatch:
+    inputs:
+      chaves:
+        description: "Chave(s) da NF-e, separadas por espaço"
+        required: true
+
+jobs:
+  teste:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests python-dotenv
+      - name: Buscar etiquetas
+        env:
+          JAMEF_API_USUARIO: ${{ secrets.JAMEF_API_USUARIO }}
+          JAMEF_API_SENHA: ${{ secrets.JAMEF_API_SENHA }}
+          CHAVES: ${{ inputs.chaves }}
+        run: python jamef_etiqueta.py $CHAVES
