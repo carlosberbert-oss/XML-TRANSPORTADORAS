@@ -13,6 +13,11 @@ on:
           - JAMEF
           - FITLOG TRANSPORTES
           - MIRA TRANSPORTES
+      reprocessar:
+        description: 'Ignorar o histórico e reprocessar os pedidos Ready To Ship (só vale para JAMEF)'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -51,14 +56,16 @@ jobs:
           SISTEMA_EMAIL: ${{ secrets.SISTEMA_EMAIL }}
           SISTEMA_SENHA: ${{ secrets.SISTEMA_SENHA }}
           TRANSPORTADORA: ${{ github.event.inputs.transportadora }}
+          REPROCESSAR: ${{ github.event.inputs.reprocessar }}
           GMAIL_USUARIO: ${{ secrets.GMAIL_USUARIO }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          GMAIL_OAUTH_TOKEN: ${{ secrets.GMAIL_OAUTH_TOKEN }}
-          JAMEF_EMAIL: ${{ secrets.JAMEF_EMAIL }}
-          JAMEF_SENHA: ${{ secrets.JAMEF_SENHA }}
+          JAMEF_API_USUARIO: ${{ secrets.JAMEF_API_USUARIO }}
+          JAMEF_API_SENHA: ${{ secrets.JAMEF_API_SENHA }}
+          PLATINUM_EMAIL: ${{ secrets.PLATINUM_EMAIL }}
+          PLATINUM_SENHA: ${{ secrets.PLATINUM_SENHA }}
           HEADLESS: "false"
           CI: "true"
-        # Tela virtual: o Chrome roda "visível", o que o anti-bot da JAMEF detecta menos
+        # Tela virtual: o Chrome roda "visível" (Zecore e Platinum)
         run: xvfb-run -a python bot.py
 
       - name: Salvar logs
