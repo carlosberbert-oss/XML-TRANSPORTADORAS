@@ -1,5 +1,6 @@
 .env
 xmls_baixados/
+etiquetas_jamef/
 logs/
 __pycache__/
 *.pyc
