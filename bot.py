@@ -944,7 +944,15 @@ def main():
 
             # 3. Filtra já processados
             historico = carregar_historico()
-            pedidos_novos = [p for p in pedidos if p["docname"] not in historico]
+            # REPROCESSAR=true (opção no "Run workflow") ignora o histórico — só vale para JAMEF,
+            # para nunca reenviar email às transportadoras externas (FITLOG/MIRA)
+            reprocessar = (os.getenv("REPROCESSAR", "false").strip().lower() == "true"
+                           and "JAMEF" in transportadora.upper())
+            if reprocessar:
+                print("\n   🔁  REPROCESSAR ativo — ignorando o histórico (só JAMEF).")
+                pedidos_novos = list(pedidos)
+            else:
+                pedidos_novos = [p for p in pedidos if p["docname"] not in historico]
             ja_processados = len(pedidos) - len(pedidos_novos)
 
             if ja_processados > 0:
@@ -1040,6 +1048,10 @@ def main():
 
             # 9. Notifica no Chat
             drive_link = "📧 Enviado por email" if email_ok else None
+            if jamef_resultado and jamef_resultado.get("pulado"):
+                drive_link = (drive_link or "") + (
+                    "\n⚠️ *API JAMEF:* credenciais não configuradas — NFs NÃO enviadas à JAMEF/Platinum"
+                    " (os pedidos serão tentados de novo na próxima execução)")
             if jamef_resultado and not jamef_resultado.get("pulado"):
                 ok_count          = len(jamef_resultado.get("ok", []))
                 falhas_nf         = jamef_resultado.get("falha", [])
@@ -1079,8 +1091,16 @@ def main():
             )
 
             # 10. Salva histórico
+            #     Se a JAMEF/Platinum não rodou (credencial ausente ou login falhou),
+            #     os pedidos NÃO entram no histórico para serem tentados de novo.
             docnames_free = {p["docname"] for p in pedidos_free}
-            salvar_historico(historico | docnames_ok | docnames_free)
+            jamef_nao_rodou = bool(jamef_resultado) and any(
+                jamef_resultado.get(k) for k in ("pulado", "erro_login", "platinum_pulado"))
+            if jamef_nao_rodou:
+                print("\n⚠️  JAMEF/Platinum não foi processada — pedidos ficam fora do histórico.")
+                salvar_historico(historico | docnames_free)
+            else:
+                salvar_historico(historico | docnames_ok | docnames_free)
             print(f"\n💾  Histórico atualizado.")
 
             if not is_ci:
