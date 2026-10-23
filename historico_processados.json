@@ -1,5 +1,5 @@
 {
-  "ultima_execucao": "2026-10-23T17:31:42.811971",
+  "ultima_execucao": "2026-10-23T18:01:55.027796",
   "docnames_processados": [
     "FREE-SAL-ORD-26092145597fbe",
     "FREE-SAL-ORD-26100684c6b9b1",
@@ -526,9 +526,11 @@
     "SAL-ORD-261021e3ead0a8",
     "SAL-ORD-261021f6f8a511",
     "SAL-ORD-261021ff8d890b",
+    "SAL-ORD-2610220110c704",
     "SAL-ORD-26102202482e6e",
     "SAL-ORD-261022035c7380",
     "SAL-ORD-2610220da58879",
+    "SAL-ORD-2610220eccdd04",
     "SAL-ORD-26102211bc7d05",
     "SAL-ORD-26102215a2d5d1",
     "SAL-ORD-261022414d8059",
@@ -544,6 +546,7 @@
     "SAL-ORD-2610229f3caa5c",
     "SAL-ORD-2610229fed6f10",
     "SAL-ORD-261022a7c9e29b",
+    "SAL-ORD-261022c8e19892",
     "SAL-ORD-261022cce54af4",
     "SAL-ORD-261022d80c0fb8",
     "SAL-ORD-261022e1bc72f6",
@@ -563,6 +566,7 @@
     "SAL-ORD-261023b06132f2",
     "SAL-ORD-261023c40a88ab",
     "SAL-ORD-261023db71a693",
-    "SAL-ORD-261023e75dd763"
+    "SAL-ORD-261023e75dd763",
+    "SAL-ORD-261023ef67a291"
   ]
 }
