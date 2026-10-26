@@ -13,6 +13,7 @@ on:
           - JAMEF
           - FITLOG TRANSPORTES
           - MIRA TRANSPORTES
+          - RODONAVES
       reprocessar:
         description: 'Ignorar o histórico e reprocessar os pedidos Ready To Ship (só vale para JAMEF)'
         required: false
@@ -37,7 +38,8 @@ jobs:
           python-version: '3.12'
 
       - name: Instalar dependências
-        run: pip install -r requirements.txt
+        # reportlab e requests: etiqueta e API da Rodonaves (rte_etiqueta.py)
+        run: pip install -r requirements.txt reportlab requests
 
       - name: Instalar dependências do sistema
         run: |
@@ -63,6 +65,12 @@ jobs:
           JAMEF_API_SENHA: ${{ secrets.JAMEF_API_SENHA }}
           PLATINUM_EMAIL: ${{ secrets.PLATINUM_EMAIL }}
           PLATINUM_SENHA: ${{ secrets.PLATINUM_SENHA }}
+          # Rodonaves (RTE): acesso à API da malha
+          RTE_USER: ${{ secrets.RTE_USER }}
+          RTE_PASS: ${{ secrets.RTE_PASS }}
+          # Envio do NOTFIS para a RTE: crie a variável RTE_ENVIAR_NOTFIS=false em
+          # Settings > Secrets and variables > Actions > Variables para desligar (padrão: envia)
+          RTE_ENVIAR_NOTFIS: ${{ vars.RTE_ENVIAR_NOTFIS || 'true' }}
           HEADLESS: "false"
           CI: "true"
         # Tela virtual: o Chrome roda "visível" (Zecore e Platinum)
