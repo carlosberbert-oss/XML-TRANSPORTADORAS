@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
 from jamef_etiqueta import JamefAPI, gerar_etiquetas, resolver_chave
+from rodonaves import rodonaves_processar_xmls, enviar_notfis_por_email, resumo_chat as resumo_rodonaves, rodonaves_nao_rodou
 
 # ── Configurações ──────────────────────────────────────────
 URL_LOGIN         = "https://zecore.zebrands.mx/login#login"
@@ -77,7 +78,7 @@ def obter_credenciais():
 def obter_transportadora() -> str:
     transportadora = os.getenv("TRANSPORTADORA", "").strip().upper()
     if not transportadora:
-        print("\n   📋  Transportadoras disponíveis: JAMEF | FITLOG TRANSPORTES | MIRA TRANSPORTES")
+        print("\n   📋  Transportadoras disponíveis: JAMEF | FITLOG TRANSPORTES | MIRA TRANSPORTES | RODONAVES")
         transportadora = input("   🚚  Qual transportadora processar? ").strip().upper()
     if not transportadora:
         print("\n❌  Nenhuma transportadora informada.")
@@ -1033,7 +1034,9 @@ def main():
             zip_path = criar_zip(todos_arquivos, transportadora)
 
             # 7. Envia ZIP por email
-            email_ok = enviar_zip_por_email(
+            #    Rodonaves não recebe o ZIP: a RTE recebe o NOTFIS (passo 8)
+            eh_rodonaves = "RODONAVES" in transportadora.upper()
+            email_ok = False if eh_rodonaves else enviar_zip_por_email(
                 zip_path, transportadora, pedidos_novos,
                 todos_arquivos, pedidos_sem_xml=pedidos_sem_xml
             )
@@ -1044,6 +1047,19 @@ def main():
                 jamef_resultado = jamef_processar_xmls(todos_arquivos)
                 jamef_resultado.update(
                     platinum_subir_etiquetas(context, jamef_resultado.get("etiquetas_pdfs", []))
+                )
+
+            # 8b. Se for RODONAVES: consulta a malha da RTE, gera as etiquetas, sobe no Platinum
+            #     e envia o NOTFIS (só das NFs com etiqueta) para a RTE
+            rte_resultado = None
+            if eh_rodonaves:
+                rte_resultado = rodonaves_processar_xmls(todos_arquivos, PASTA_XMLS)
+                if rte_resultado.get("etiquetas_pdfs"):
+                    rte_resultado.update(
+                        platinum_subir_etiquetas(context, rte_resultado["etiquetas_pdfs"])
+                    )
+                rte_resultado["notfis_email"] = enviar_notfis_por_email(
+                    rte_resultado.get("notfis"), rte_resultado.get("notfis_nfs", 0)
                 )
 
             # 9. Notifica no Chat
@@ -1082,6 +1098,9 @@ def main():
 
                 drive_link = (drive_link or "") + resumo_jamef
 
+            if rte_resultado:
+                drive_link = (drive_link or "") + resumo_rodonaves(rte_resultado)
+
             enviar_notificacao(
                 pedidos_novos, todos_arquivos, zip_path,
                 drive_link=drive_link,
@@ -1096,8 +1115,8 @@ def main():
             docnames_free = {p["docname"] for p in pedidos_free}
             jamef_nao_rodou = bool(jamef_resultado) and any(
                 jamef_resultado.get(k) for k in ("pulado", "erro_login", "platinum_pulado"))
-            if jamef_nao_rodou:
-                print("\n⚠️  JAMEF/Platinum não foi processada — pedidos ficam fora do histórico.")
+            if jamef_nao_rodou or rodonaves_nao_rodou(rte_resultado):
+                print("\n⚠️  Etiquetas/Platinum/NOTFIS não foram concluídos — pedidos ficam fora do histórico.")
                 salvar_historico(historico | docnames_free)
             else:
                 salvar_historico(historico | docnames_ok | docnames_free)
