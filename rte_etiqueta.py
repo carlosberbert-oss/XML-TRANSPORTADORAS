@@ -21,6 +21,7 @@ Variáveis de ambiente (arquivo .env na pasta do script, ou GitHub Secrets):
 """
 
 import io
+import re
 import os
 import sys
 import time
@@ -143,13 +144,20 @@ def obter_token():
     return _token_cache["valor"]
 
 
+def _numero_api(nro):
+    """A API só aceita o número do endereço, sem complemento.
+    "123 apto 4" -> "123" | "49A" -> "49" | "S/N", "QUADRA 16 LOTE 2", "KM 154" -> "" (número é opcional)."""
+    m = re.match(r"\s*(\d+)", str(nro or ""))
+    return m.group(1).lstrip("0") if m else ""
+
+
 def consultar_malha(nf):
     params = {
         "ReceiverCustomerTaxIdRegistration": nf["dest_doc"],
         "SenderCustomerTaxIdRegistration": nf["emit_doc"],
         "ZipCode": nf["cep"],
         "District": nf["bairro"],
-        "AddressNumber": nf["numero"],
+        "AddressNumber": _numero_api(nf["numero"]),
         "CityDescription": nf["cidade"],
         "UnitFederation": nf["uf"],
     }
@@ -161,6 +169,9 @@ def consultar_malha(nf):
         raise ValueError(f"Bairro com menos de 3 caracteres, a API RTE recusa: {params['District']!r}")
     headers = {"Authorization": f"Bearer {obter_token()}", "accept": "application/json"}
     r = requests.get(URL_MALHA, params=params, headers=headers, timeout=30)   # GET com query string
+    if r.status_code == 400 and "AddressNumber" in r.text and params["AddressNumber"]:
+        params["AddressNumber"] = ""          # o número é opcional: tenta só com CEP e bairro
+        r = requests.get(URL_MALHA, params=params, headers=headers, timeout=30)
     if r.status_code in (401, 403):
         raise PermissionError(f"API RTE recusou o acesso ({r.status_code}): {r.text[:200]}")
     r.raise_for_status()
